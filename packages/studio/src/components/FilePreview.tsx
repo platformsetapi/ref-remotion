@@ -10,6 +10,7 @@ import {
 import {JSONViewer} from './JSONViewer';
 import {Spacing} from './layout';
 import {LutPreview} from './LutPreview';
+import {RenderOutputKeyboardShortcuts} from './RenderOutputKeyboardShortcuts';
 import {TextViewer} from './TextViewer';
 
 const msgStyle: React.CSSProperties = {
@@ -128,10 +129,23 @@ const NativeMediaPreview: React.FC<{
 			getFps: () => fpsRef.current,
 		});
 	}, [content, fileType, src]);
-	return fileType === 'audio' ? (
-		<audio ref={ref as React.RefObject<HTMLAudioElement>} src={src} controls />
-	) : (
-		<video ref={ref as React.RefObject<HTMLVideoElement>} src={src} controls />
+	return (
+		<>
+			{content === null ? null : <RenderOutputKeyboardShortcuts />}
+			{fileType === 'audio' ? (
+				<audio
+					ref={ref as React.RefObject<HTMLAudioElement>}
+					src={src}
+					controls
+				/>
+			) : (
+				<video
+					ref={ref as React.RefObject<HTMLVideoElement>}
+					src={src}
+					controls
+				/>
+			)}
+		</>
 	);
 };
 

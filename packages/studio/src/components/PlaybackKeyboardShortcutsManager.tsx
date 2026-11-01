@@ -1,6 +1,7 @@
 import {PlayerInternals} from '@remotion/player';
 import type React from 'react';
-import {useCallback, useEffect} from 'react';
+import {useCallback, useContext, useEffect} from 'react';
+import {Internals} from 'remotion';
 import {useIsVideoComposition} from '../helpers/is-current-selected-still';
 import {useKeybinding} from '../helpers/use-keybinding';
 import {stepPlaybackRate} from '../state/playbackrate';
@@ -14,6 +15,9 @@ export const PlaybackKeyboardShortcutsManager: React.FC<{
 }> = ({setPlaybackRate, setMuted, setLoop}) => {
 	const keybindings = useKeybinding();
 	const isVideoComposition = useIsVideoComposition();
+	const {canvasContent} = useContext(Internals.CompositionManager);
+	const isOutput =
+		canvasContent?.type === 'output' || canvasContent?.type === 'output-blob';
 
 	useEffect(() => {
 		if (!isVideoComposition) {
@@ -94,6 +98,7 @@ export const PlaybackKeyboardShortcutsManager: React.FC<{
 	}, [isPlaying, play, setPlaybackRate]);
 
 	useEffect(() => {
+		if (isOutput) return;
 		const jKey = keybindings.registerKeybinding({
 			event: 'keydown',
 			action: 'reversePlayback',
@@ -151,7 +156,7 @@ export const PlaybackKeyboardShortcutsManager: React.FC<{
 			decrease.unregister();
 			increase.unregister();
 		};
-	}, [keybindings, onJKey, onKKey, onLKey, setPlaybackRate]);
+	}, [isOutput, keybindings, onJKey, onKKey, onLKey, setPlaybackRate]);
 
 	return null;
 };

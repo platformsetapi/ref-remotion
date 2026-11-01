@@ -1634,7 +1634,7 @@ export const WebMcp: FC = () => {
 					name: 'get_playback_state',
 					title: 'Get Studio playback state',
 					description:
-						'Read the current frame, frame rate, duration, playing state, audio state, playback rate, looping state, and normalized timeline zoom for the composition or ready audio/video asset or render-output preview. All playback fields are null for unsupported or unready content. Render outputs have no timeline zoom.',
+						'Read the current frame, frame rate, duration, playing state, audio state, playback rate, looping state, and normalized timeline zoom for the composition or ready audio/video asset or render-output preview. All playback fields are null for unsupported or unready content. Render outputs have no timeline zoom and expose playbackStartFrame for returning to their last playback start with pause and seek_to_frame.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1647,6 +1647,7 @@ export const WebMcp: FC = () => {
 							return Promise.resolve({
 								currentContent: currentContentRef.current,
 								currentFrame: null,
+								playbackStartFrame: null,
 								fps: null,
 								durationInFrames: null,
 								playing: null,
@@ -1663,6 +1664,7 @@ export const WebMcp: FC = () => {
 							return Promise.resolve({
 								currentContent: currentContentRef.current,
 								currentFrame: state.frame,
+								playbackStartFrame: state.playbackStartFrame,
 								fps: state.fps,
 								durationInFrames: state.durationInFrames,
 								playing: state.playing,
@@ -1690,6 +1692,7 @@ export const WebMcp: FC = () => {
 						return Promise.resolve({
 							currentContent: currentContentRef.current,
 							currentFrame: getCurrentFrame(),
+							playbackStartFrame: null,
 							fps: target.fps,
 							durationInFrames: target.durationInFrames,
 							playing: isPlaying(),

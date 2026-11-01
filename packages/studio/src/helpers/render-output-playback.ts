@@ -7,6 +7,7 @@ export type RenderOutputPlaybackContent = Extract<
 >;
 export type RenderOutputPlaybackState = {
 	frame: number;
+	playbackStartFrame: number | null;
 	fps: number;
 	durationInFrames: number;
 	playing: boolean;
@@ -20,6 +21,7 @@ export type RenderOutputPlaybackTarget = {
 	getState: () => RenderOutputPlaybackState;
 	play: () => Promise<void>;
 	pause: () => void;
+	pauseAndReturnToPlayStart: () => void;
 	seekToFrame: (frame: number) => void;
 	setPlaybackRate: (rate: number) => void;
 	setMuted: (muted: boolean) => void;
@@ -33,6 +35,12 @@ type Registration = {
 	target: RenderOutputPlaybackTarget;
 };
 let current: Registration | null = null;
+
+// Native media clocks can truncate a requested seek time to microseconds.
+// Tolerate that precision loss without rounding ordinary mid-frame playback.
+const mediaTimeToFrame = (time: number, fps: number) => {
+	return Math.floor((time + 0.000001) * fps);
+};
 
 const isReady = (entry: Registration) => {
 	const fps = entry.getFps();
@@ -79,6 +87,15 @@ export const registerRenderOutputPlayback = ({
 	element: HTMLMediaElement;
 	getFps: () => number | null;
 }) => {
+	let playStartTime: number | null = null;
+	let awaitingPlayEvent = false;
+	let playRequest = 0;
+	const onPlay = () => {
+		if (current !== entry) return;
+		if (!awaitingPlayEvent) playStartTime = element.currentTime;
+		awaitingPlayEvent = false;
+	};
+
 	const requireCurrent = () => {
 		if (!isReady(entry))
 			throw new Error(
@@ -98,8 +115,15 @@ export const registerRenderOutputPlayback = ({
 			return {
 				frame: Math.min(
 					durationInFrames - 1,
-					Math.max(0, Math.floor(element.currentTime * fps + 1e-7)),
+					Math.max(0, mediaTimeToFrame(element.currentTime, fps)),
 				),
+				playbackStartFrame:
+					playStartTime === null
+						? null
+						: Math.min(
+								durationInFrames - 1,
+								Math.max(0, mediaTimeToFrame(playStartTime, fps)),
+							),
 				fps,
 				durationInFrames,
 				playing: !element.paused && !element.ended,
@@ -111,7 +135,24 @@ export const registerRenderOutputPlayback = ({
 		},
 		play: async () => {
 			requireCurrent();
-			await element.play();
+			const request = ++playRequest;
+			const previousPlayStartTime = playStartTime;
+			if (element.paused || element.ended) {
+				playStartTime = element.ended ? 0 : element.currentTime;
+				awaitingPlayEvent = true;
+			}
+
+			try {
+				await element.play();
+			} catch (error) {
+				if (request === playRequest && awaitingPlayEvent) {
+					awaitingPlayEvent = false;
+					playStartTime = previousPlayStartTime;
+				}
+
+				throw error;
+			}
+
 			if (!isReady(entry)) {
 				if (current?.element !== element) element.pause();
 				throw new Error(
@@ -122,6 +163,15 @@ export const registerRenderOutputPlayback = ({
 		pause: () => {
 			requireCurrent();
 			element.pause();
+		},
+		pauseAndReturnToPlayStart: () => {
+			requireCurrent();
+			if (playStartTime === null) return;
+			element.pause();
+			element.currentTime = Math.max(
+				0,
+				Math.min(element.duration, playStartTime),
+			);
 		},
 		seekToFrame: (frame) => {
 			const state = target.getState();
@@ -161,7 +211,9 @@ export const registerRenderOutputPlayback = ({
 	const entry: Registration = {content, element, getFps, target};
 	if (current && current.element !== element) current.element.pause();
 	current = entry;
+	element.addEventListener('play', onPlay);
 	return () => {
+		element.removeEventListener('play', onPlay);
 		if (current === entry) {
 			current = null;
 			element.pause();

@@ -803,6 +803,7 @@ Returns the current playhead, playback, audio, looping and timeline zoom state. 
 {
   currentContent: CurrentContent | null;
   currentFrame: number | null;
+  playbackStartFrame: number | null;
   fps: number | null;
   durationInFrames: number | null;
   playing: boolean | null;
@@ -821,6 +822,12 @@ The preview's frame rate, used to interpret `currentFrame` and `seek_to_frame`. 
 #### `durationInFrames`<AvailableFrom v="4.0.540" />
 
 The current preview's duration in its frame clock, or `null` when unavailable. Rendered outputs derive it from their native media duration and preview frame rate.
+
+#### `playbackStartFrame`<AvailableFrom v="4.0.540" />
+
+The rendered output's remembered playback-start frame, using its `fps` clock. It updates when playback starts, including through native media controls, and stays unchanged while pausing or seeking. It is `null` before playback has started, and for compositions, assets and unready content.
+
+To pause an output and return to this frame, call `pause`, then `seek_to_frame` with `playbackStartFrame` while the same output remains open.
 
 #### `timelineZoom`
 
