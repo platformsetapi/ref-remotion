@@ -11,6 +11,7 @@ import type {
 import {Internals} from 'remotion';
 import type {OriginalPosition} from '../../error-overlay/react-overlay/utils/get-source-map';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
+import {copySourcePathProvenance} from '../../helpers/rebase-source-request';
 import {ExpandedTracksSetterContext} from '../ExpandedTracksProvider';
 import {deepEqual} from '../RenderModal/SchemaEditor/deep-equal';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
@@ -140,6 +141,20 @@ export const useSequencePropsSubscription = ({
 					: null;
 
 				if (previousNodePathKey === newNodePathKey) {
+					if (previousNodePath) {
+						copySourcePathProvenance(
+							newNodePath.nodePath,
+							previousNodePath.nodePath,
+						);
+					}
+
+					if (nodePathAtResubscribe) {
+						copySourcePathProvenance(
+							newNodePath.nodePath,
+							nodePathAtResubscribe.nodePath,
+						);
+					}
+
 					return;
 				}
 

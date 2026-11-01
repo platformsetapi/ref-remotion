@@ -174,6 +174,7 @@ export const TimelineTextContentField: React.FC<{
 		<RemTextarea
 			key={String(propStatus.codeValue ?? '')}
 			ref={setInputRef}
+			indentWithTab={false}
 			status={valid ? 'ok' : 'error'}
 			aria-invalid={!valid}
 			small

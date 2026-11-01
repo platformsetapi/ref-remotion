@@ -86,7 +86,7 @@ const navButtonStyle: React.CSSProperties = {
 	background: 'none',
 	border: 'none',
 	color: WHITE,
-	cursor: 'pointer',
+	cursor: 'default',
 	display: 'flex',
 	flexShrink: 0,
 	height: NAV_BUTTON_SIZE,
@@ -788,7 +788,6 @@ export const TimelineKeyframeControls: React.FC<{
 		(): React.CSSProperties => ({
 			...navButtonStyle,
 			...(mode === 'inspector' ? inspectorPreviousNavButtonStyle : null),
-			cursor: previousDisabled ? 'default' : 'pointer',
 			opacity: previousDisabled ? 0.35 : 1,
 			visibility: showNavigationButtons ? 'visible' : 'hidden',
 		}),
@@ -799,7 +798,6 @@ export const TimelineKeyframeControls: React.FC<{
 		(): React.CSSProperties => ({
 			...navButtonStyle,
 			...(mode === 'inspector' ? inspectorNavButtonStyle : null),
-			cursor: nextDisabled ? 'default' : 'pointer',
 			opacity: nextDisabled ? 0.35 : 1,
 			visibility: showNavigationButtons ? 'visible' : 'hidden',
 		}),
@@ -809,7 +807,6 @@ export const TimelineKeyframeControls: React.FC<{
 	const diamondStyle = useMemo(
 		(): React.CSSProperties => ({
 			...diamondButtonStyle,
-			cursor: canToggleKeyframe && clientId ? 'pointer' : 'default',
 			opacity: canToggleKeyframe && clientId ? 1 : 0.35,
 		}),
 		[canToggleKeyframe, clientId],
