@@ -493,6 +493,7 @@ const TimelineInner: React.FC = () => {
 		visibleTracks,
 		visibleLayoutTracks,
 		value: layerChildrenValue,
+		remapCollapsedLayers,
 	} = useTimelineLayerChildren(
 		collapsed,
 		collapsedLayout,
@@ -682,7 +683,9 @@ const TimelineInner: React.FC = () => {
 					/>
 				);
 			})}
-			{isStudioInteractivityEnabled() ? <SequencePropsObserver /> : null}
+			{isStudioInteractivityEnabled() ? (
+				<SequencePropsObserver remapCollapsedLayers={remapCollapsedLayers} />
+			) : null}
 			<TimelineLayerChildrenProvider value={layerChildrenValue}>
 				<TimelineKeyframeTracksProvider tracks={filtered}>
 					<TimelineSelectableItemsProvider timeline={shown}>

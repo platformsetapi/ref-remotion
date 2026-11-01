@@ -1,6 +1,7 @@
 import {
 	REACT_REFRESH_STARTED_EVENT,
 	type EventSourceEvent,
+	type SequenceNodePathMutation,
 } from '@remotion/studio-shared';
 import {useContext, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {flushSync} from 'react-dom';
@@ -17,7 +18,13 @@ import {deepEqual} from '../RenderModal/SchemaEditor/deep-equal';
 import {refreshSequencePropsSubscription} from './sequence-props-subscription-store';
 import {useTimelineSelection} from './TimelineSelection';
 
-export const SequencePropsObserver = () => {
+export const SequencePropsObserver = ({
+	remapCollapsedLayers,
+}: {
+	readonly remapCollapsedLayers: (
+		mutations: SequenceNodePathMutation[],
+	) => void;
+}) => {
 	const {subscribeToEvent} = useContext(StudioServerConnectionCtx);
 	const {remapPropStatuses, setPropStatuses} = useContext(
 		Internals.VisualModeSettersContext,
@@ -87,6 +94,7 @@ export const SequencePropsObserver = () => {
 		}
 
 		remapSelectionNodePaths(mutations);
+		remapCollapsedLayers(mutations);
 
 		// Each edit can remap many siblings. Index paths once before matching
 		// them against every mounted override ID.
@@ -269,6 +277,7 @@ export const SequencePropsObserver = () => {
 		migrateExpandedTracksForSubscriptionKey,
 		propStatusesRef,
 		remapSelectionNodePaths,
+		remapCollapsedLayers,
 		remapPropStatuses,
 		setOverrideIdToNodePath,
 	]);
