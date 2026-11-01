@@ -1,5 +1,6 @@
 import type {RenderJob} from '@remotion/studio-shared';
 import React, {useCallback, useContext} from 'react';
+import {StudioServerConnectionCtx} from '../../helpers/client-id';
 import {RENDER_STATUS_BACKGROUND} from '../../helpers/colors';
 import {
 	makeClientRetryPayload,
@@ -12,13 +13,18 @@ import {HORIZONTAL_SCROLLBAR_CLASSNAME} from '../Menu/is-menu-item';
 import {ModalContainer} from '../ModalContainer';
 import {ModalHeader} from '../ModalHeader';
 import {showNotification} from '../Notifications/NotificationCenter';
-import {cancelRenderJob, removeRenderJob} from '../RenderQueue/actions';
+import {removeRenderJob} from '../RenderQueue/actions';
 import type {
 	ClientStillRenderJob,
 	ClientVideoRenderJob,
 } from '../RenderQueue/client-side-render-types';
 import {isRestoredClientJob} from '../RenderQueue/client-side-render-types';
-import {isClientRenderJob, RenderQueueContext} from '../RenderQueue/context';
+import {
+	RenderQueueActionsContext,
+	isClientRenderJob,
+	RenderQueueContext,
+} from '../RenderQueue/context';
+import {useIsRenderJobCancelling} from '../RenderQueue/use-is-render-job-cancelling';
 import {ClientRenderProgress} from './ClientRenderProgress';
 import {GuiRenderStatus} from './GuiRenderStatus';
 
@@ -53,8 +59,10 @@ export const RenderStatusModal: React.FC<{readonly jobId: string}> = ({
 	jobId,
 }) => {
 	const {setSelectedModal} = useContext(SetSelectedModalContext);
-	const {jobs, removeClientJob, cancelClientJob} =
-		useContext(RenderQueueContext);
+	const {jobs, removeClientJob} = useContext(RenderQueueContext);
+	const {cancelJob, canCancelJob} = useContext(RenderQueueActionsContext);
+	const {previewServerState} = useContext(StudioServerConnectionCtx);
+	const cancelling = useIsRenderJobCancelling(jobId);
 
 	const job = jobs.find((j) => j.id === jobId);
 	if (!job) {
@@ -95,18 +103,8 @@ export const RenderStatusModal: React.FC<{readonly jobId: string}> = ({
 	}, [job, isClientJob, removeClientJob, setSelectedModal]);
 
 	const onClickOnCancel = useCallback(() => {
-		if (isClientJob) {
-			cancelClientJob(job.id);
-		} else {
-			cancelRenderJob(job).catch((err) => {
-				showNotification(`Could not cancel job: ${err.message}`, 2000);
-			});
-		}
-	}, [job, isClientJob, cancelClientJob]);
-
-	if (job.status === 'idle') {
-		throw new Error('should not have rendered this modal');
-	}
+		cancelJob(jobId);
+	}, [cancelJob, jobId]);
 
 	const errorDetails =
 		job.status === 'failed'
@@ -119,6 +117,15 @@ export const RenderStatusModal: React.FC<{readonly jobId: string}> = ({
 		<ModalContainer onOutsideClick={onQuit} onEscape={onQuit}>
 			<ModalHeader title={`Render ${job.compositionId}`} />
 			<div style={container}>
+				{job.status === 'cancelled' ? (
+					<p role="status" style={{fontSize: 14}}>
+						Render cancelled.
+					</p>
+				) : job.status === 'idle' ? (
+					<p role="status" style={{fontSize: 14}}>
+						Queued for rendering.
+					</p>
+				) : null}
 				{job.status === 'failed' ? (
 					<>
 						<p>The render failed because of the following error:</p>
@@ -135,8 +142,17 @@ export const RenderStatusModal: React.FC<{readonly jobId: string}> = ({
 					))}
 				<div style={spacer} />
 				<div style={buttonRow}>
-					{job.status === 'running' ? (
-						<Button onClick={onClickOnCancel}>Cancel render</Button>
+					{job.status === 'running' || job.status === 'idle' ? (
+						<Button
+							onClick={onClickOnCancel}
+							disabled={
+								cancelling ||
+								!canCancelJob(jobId) ||
+								(!isClientJob && previewServerState.type !== 'connected')
+							}
+						>
+							{cancelling ? 'Cancelling…' : 'Cancel render'}
+						</Button>
 					) : (
 						<Button onClick={onClickOnRemove}>Remove render</Button>
 					)}

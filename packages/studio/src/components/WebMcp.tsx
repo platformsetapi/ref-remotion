@@ -52,7 +52,11 @@ import {
 	getDefaultOutputBaseName,
 	validatePublicOutputName,
 } from './public-output-name';
-import {RenderQueueContext} from './RenderQueue/context';
+import {
+	isClientRenderJob,
+	RenderQueueActionsContext,
+	RenderQueueContext,
+} from './RenderQueue/context';
 import {measureOutlineTargets} from './selected-outline-measurement';
 import {
 	deleteEffectsFromSource,
@@ -277,6 +281,7 @@ export const WebMcp: FC = () => {
 	const compactSeriesRef = useRef(compactSeries);
 	compactSeriesRef.current = compactSeries;
 	const {addCaptionJob, addVideoMattingJob} = useContext(RenderQueueContext);
+	const renderQueueActions = useContext(RenderQueueActionsContext);
 	const staticFiles = useStaticFiles();
 	const timelineSelectionRef = useCurrentTimelineSelectionStateAsRef();
 	const currentSelectionRef = useRef<string | null>(null);
@@ -827,6 +832,75 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: false},
 					execute: () => shutDownStudio(),
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'get_render_jobs',
+					title: 'Get Studio render jobs',
+					description:
+						'Read the server and browser render jobs currently shown in Studio, including progress, cancellation availability, and pending cancellation. Excludes transcription and background removal jobs. Reading jobs is available in all Studio modes.',
+					inputSchema: {
+						type: 'object',
+						properties: {},
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: true},
+					execute: () => {
+						return Promise.resolve({
+							jobs: renderQueueActions.getJobs().map((job) => ({
+								id: job.id,
+								type: job.type,
+								compositionId: job.compositionId,
+								outputName: job.outName,
+								status: job.status,
+								cancelling: renderQueueActions.isCancelling(job.id),
+								canCancel: renderQueueActions.canCancelJob(job.id),
+								progress:
+									job.status === 'done'
+										? 1
+										: job.status === 'idle'
+											? 0
+											: job.status === 'running'
+												? isClientRenderJob(job)
+													? job.progress.progress
+													: job.progress.value
+												: null,
+								error: job.status === 'failed' ? job.error.message : null,
+							})),
+						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'cancel_render_job',
+					title: 'Cancel Studio render job',
+					description:
+						'Request cancellation of a render job using the same action as Studio. Get the jobId from get_render_jobs. Server jobs require a connected Studio server; queued or running browser render jobs can be cancelled locally in every Studio mode. A requested result acknowledges the cancellation request, not a terminal outcome; read get_render_jobs until the job finishes.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							jobId: {
+								type: 'string',
+								minLength: 1,
+								description: 'The render job id returned by get_render_jobs.',
+							},
+						},
+						required: ['jobId'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({jobId}) => {
+						if (typeof jobId !== 'string' || jobId.length === 0) {
+							throw new Error('jobId must be a non-empty string.');
+						}
+
+						const result = await renderQueueActions.cancelJob(jobId);
+						return {jobId, ...result};
+					},
 				},
 				{signal: controller.signal},
 			),
@@ -2076,6 +2150,7 @@ export const WebMcp: FC = () => {
 		compositionManagerRef,
 		isPlaying,
 		propStatusesRef,
+		renderQueueActions,
 		selectComposition,
 		sequencesRef,
 		setEditorShowGuides,

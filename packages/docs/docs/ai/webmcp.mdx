@@ -17,6 +17,7 @@ Agents can:
 - See selectable items and select them
 - Duplicate sequences and inspect duplication progress
 - See available compositions and navigate to them
+- Inspect render jobs and cancel queued or running renders
 - Read the error currently shown in the Studio error overlay
 - Get the current HTML of your composition
 - See current outlines of elements and their geometry
@@ -201,6 +202,105 @@ Gracefully shuts down the Studio server using [`shutDownStudio()`](/docs/studio/
 ```
 
 The output acknowledges the shutdown request; the connection closes as Studio shuts down.
+
+### `get_render_jobs`<AvailableFrom v="4.0.540" />
+
+Returns the server and browser render jobs shown in Studio, including pending cancellation. Transcription and background removal jobs are excluded. Available in all Studio modes; no composition needs to be open.
+
+```ts title="Input"
+{}
+```
+
+```ts title="Output"
+{
+  jobs: Array<{
+    id: string;
+    type: 'still' | 'sequence' | 'video' | 'client-still' | 'client-video';
+    compositionId: string;
+    outputName: string;
+    status: 'idle' | 'running' | 'saving' | 'done' | 'failed' | 'cancelled';
+    cancelling: boolean;
+    canCancel: boolean;
+    progress: number | null;
+    error: string | null;
+  }>;
+}
+```
+
+#### `jobs`
+
+The jobs currently known to this Studio tab. Server job updates require an attached Studio server; a disconnected tab may retain the last received state. Browser render jobs run locally in the tab.
+
+##### `id`
+
+The identifier to pass as `jobId` to `cancel_render_job`.
+
+##### `type`
+
+`still`, `sequence` and `video` identify server renders. `client-still` and `client-video` identify browser renders.
+
+##### `compositionId`
+
+The ID of the composition being rendered.
+
+##### `outputName`
+
+The selected output filename or image-sequence directory. A job listed here has not necessarily produced its output yet.
+
+##### `status`
+
+`idle` means queued, `running` means rendering, and `saving` means a browser render is saving its output. `done`, `failed` and `cancelled` are terminal outcomes. An intentional cancellation is reported as `cancelled`, without an error message.
+
+##### `cancelling`
+
+Whether a cancellation request started in this Studio tab is pending. The job may still report `running` while cancellation is in progress.
+
+##### `canCancel`
+
+Whether the shared Studio cancellation action is currently available for this job. This is `false` while cancellation is pending or the job is no longer cancellable. Server renders require a connected Studio server; queued or running browser renders can be cancelled locally in all Studio modes.
+
+##### `progress`
+
+The current render progress from `0` to `1`. Queued jobs report `0` and completed jobs report `1`. `null` means no progress value is available, including failed, cancelled and browser-saving jobs.
+
+##### `error`
+
+The failure message for a `failed` job, otherwise `null`.
+
+### `cancel_render_job`<AvailableFrom v="4.0.540" />
+
+Requests cancellation using the same action as Studio's Cancel render control. Pending cancellation appears immediately in `get_render_jobs`, and repeated requests do not start another cancellation. A failed request clears its pending state and shows the same error notification as the UI.
+
+Server render cancellation requires a connected interactive Studio. It is unavailable when the server is detached or in a read-only deployed Studio or Browser Studio. Queued or running browser render jobs can be cancelled locally in all four modes. Queued jobs are cancelled without starting their render. No composition needs to be open.
+
+```ts title="Input"
+{
+  jobId: string;
+}
+```
+
+#### `jobId`
+
+Required. A non-empty job identifier returned by `get_render_jobs`.
+
+```ts title="Output"
+{jobId: string} & (
+  | {status: 'requested' | 'already-pending' | 'not-cancellable' | 'not-found'}
+  | {status: 'error'; reason: string}
+)
+```
+
+#### `status`
+
+`requested` means the cancellation request was accepted. Read `get_render_jobs` to observe the terminal outcome; a render that finished before cancellation can still report `done`.
+
+`already-pending` means a request for this job is already in progress. `not-cancellable` means the job's state or Studio mode does not allow cancellation. `not-found` means the job is no longer in the render queue. None of these results starts another request.
+
+`error` means the request failed. Invalid input rejects the tool call before cancellation starts.
+
+#### `reason`
+
+The failure message, present when `status` is `error`.
 
 ### `get_current_error`<AvailableFrom v="4.0.520" />
 
