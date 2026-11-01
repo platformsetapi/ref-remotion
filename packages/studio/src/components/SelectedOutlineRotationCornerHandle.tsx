@@ -1,7 +1,8 @@
 import React, {useContext, useMemo, useRef} from 'react';
 import {Internals} from 'remotion';
 import {TRANSPARENT} from '../helpers/colors';
-import {startCapturedPointerSession} from '../helpers/pointer-session';
+import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-cancelable-pointer-session';
+import {isPointerSessionRelease} from '../helpers/pointer-session';
 import {EditorSnappingContext} from '../state/editor-snapping';
 import {ContextMenuForTarget} from './ContextMenu';
 import {
@@ -235,7 +236,7 @@ export const SelectedOutlineRotationCornerHandle: React.FC<{
 				}
 			};
 
-			const onPointerUp = () => {
+			const finishDrag = (commit: boolean) => {
 				window.removeEventListener('keydown', onKeyChange);
 				window.removeEventListener('keyup', onKeyChange);
 				if (dragStarted) {
@@ -248,7 +249,7 @@ export const SelectedOutlineRotationCornerHandle: React.FC<{
 					lastValues,
 				});
 
-				if (changes.length === 0) {
+				if (!commit || changes.length === 0) {
 					clearSelectedOutlineDragOverrides({
 						clearDragOverrides,
 						dragStates,
@@ -296,11 +297,13 @@ export const SelectedOutlineRotationCornerHandle: React.FC<{
 					});
 			};
 
-			startCapturedPointerSession({
+			startEscapeCancelableCapturedPointerSession({
 				event,
 				captureTarget: event.currentTarget,
 				onMove: onPointerMove,
-				onEnd: onPointerUp,
+				onEnd: (reason, endEvent) => {
+					finishDrag(isPointerSessionRelease(reason, endEvent));
+				},
 			});
 			window.addEventListener('keydown', onKeyChange);
 			window.addEventListener('keyup', onKeyChange);

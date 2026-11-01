@@ -1,8 +1,9 @@
 import React, {useContext} from 'react';
 import {Internals} from 'remotion';
 import {TRANSPARENT} from '../helpers/colors';
+import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-cancelable-pointer-session';
 import {isMac} from '../helpers/is-mac';
-import {startCapturedPointerSession} from '../helpers/pointer-session';
+import {isPointerSessionRelease} from '../helpers/pointer-session';
 import {EditorSnappingContext} from '../state/editor-snapping';
 import {canvasRotationCursor} from './canvas-rotation-cursor';
 import {
@@ -231,7 +232,7 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 				}
 			};
 
-			const onPointerUp = () => {
+			const finishDrag = (commit: boolean) => {
 				svg.style.cursor = previousSvgCursor;
 				if (dragStarted) {
 					stopForcingSpecificCursor();
@@ -242,7 +243,7 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 					dragStates,
 					lastValues,
 				});
-				if (changes.length === 0) {
+				if (!commit || changes.length === 0) {
 					clearSelectedOutlineDragOverrides({
 						clearDragOverrides,
 						dragStates,
@@ -286,11 +287,13 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 
 			// The polygon gates pointer-down, while the stable overlay keeps the
 			// session alive after the pointer leaves the selected item.
-			startCapturedPointerSession({
+			startEscapeCancelableCapturedPointerSession({
 				event,
 				captureTarget: svg,
 				onMove: onPointerMove,
-				onEnd: onPointerUp,
+				onEnd: (reason, endEvent) => {
+					finishDrag(isPointerSessionRelease(reason, endEvent));
+				},
 			});
 		},
 		[

@@ -3,6 +3,37 @@ import {
 	startDeferredCapturedPointerSession,
 } from './pointer-session';
 
+export const startEscapeCancelableSession = (
+	startSession: (onEnd: () => void) => () => void,
+): (() => void) => {
+	let ended = false;
+	const onKeyDown = (event: KeyboardEvent) => {
+		if (event.key !== 'Escape') {
+			return;
+		}
+
+		// Cancel before Escape reaches selection or menu shortcuts.
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		stopSession();
+	};
+
+	const onEnd = () => {
+		ended = true;
+		window.removeEventListener('keydown', onKeyDown, true);
+	};
+
+	const stopSession = startSession(onEnd);
+	if (!ended) {
+		window.addEventListener('keydown', onKeyDown, true);
+	}
+
+	return () => {
+		onEnd();
+		stopSession();
+	};
+};
+
 const withEscapeCancellation = <
 	Options extends {
 		onEnd: Parameters<typeof startCapturedPointerSession>[0]['onEnd'];
@@ -11,26 +42,15 @@ const withEscapeCancellation = <
 	startSession: (options: Options) => () => void,
 ) => {
 	return (options: Options): (() => void) => {
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key !== 'Escape') {
-				return;
-			}
-
-			// Cancel before Escape reaches selection or menu shortcuts.
-			event.preventDefault();
-			event.stopImmediatePropagation();
-			stopSession();
-		};
-
-		const stopSession = startSession({
-			...options,
-			onEnd: (reason, event) => {
-				window.removeEventListener('keydown', onKeyDown, true);
-				options.onEnd(reason, event);
-			},
-		});
-		window.addEventListener('keydown', onKeyDown, true);
-		return stopSession;
+		return startEscapeCancelableSession((onEnd) =>
+			startSession({
+				...options,
+				onEnd: (reason, event) => {
+					onEnd();
+					options.onEnd(reason, event);
+				},
+			}),
+		);
 	};
 };
 

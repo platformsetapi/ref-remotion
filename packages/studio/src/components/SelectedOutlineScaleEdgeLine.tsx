@@ -1,7 +1,8 @@
 import React, {useContext, useMemo, useRef} from 'react';
 import {Internals} from 'remotion';
 import {TRANSPARENT} from '../helpers/colors';
-import {startCapturedPointerSession} from '../helpers/pointer-session';
+import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-cancelable-pointer-session';
+import {isPointerSessionRelease} from '../helpers/pointer-session';
 import {ContextMenuForTarget} from './ContextMenu';
 import {
 	forceSpecificCursor,
@@ -176,7 +177,7 @@ export const SelectedOutlineScaleEdgeLine: React.FC<{
 				}
 			};
 
-			const onPointerUp = () => {
+			const finishDrag = (commit: boolean) => {
 				if (dragStarted) {
 					stopForcingSpecificCursor();
 					onDraggingChange(false);
@@ -187,7 +188,7 @@ export const SelectedOutlineScaleEdgeLine: React.FC<{
 					lastValues,
 				});
 
-				if (changes.length === 0) {
+				if (!commit || changes.length === 0) {
 					clearSelectedOutlineDragOverrides({
 						clearDragOverrides,
 						dragStates,
@@ -233,11 +234,13 @@ export const SelectedOutlineScaleEdgeLine: React.FC<{
 					});
 			};
 
-			startCapturedPointerSession({
+			startEscapeCancelableCapturedPointerSession({
 				event,
 				captureTarget: event.currentTarget,
 				onMove: onPointerMove,
-				onEnd: onPointerUp,
+				onEnd: (reason, endEvent) => {
+					finishDrag(isPointerSessionRelease(reason, endEvent));
+				},
 			});
 		},
 		[

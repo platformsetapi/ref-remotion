@@ -1,7 +1,8 @@
 import React, {useContext, useLayoutEffect, useMemo} from 'react';
 import {Internals} from 'remotion';
 import {BLUE, TRANSPARENT} from '../helpers/colors';
-import {startCapturedPointerSession} from '../helpers/pointer-session';
+import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-cancelable-pointer-session';
+import {isPointerSessionRelease} from '../helpers/pointer-session';
 import {
 	forceSpecificCursor,
 	stopForcingSpecificCursor,
@@ -289,10 +290,15 @@ const CropHandle: React.FC<{
 				}
 			};
 
-			const onPointerUp = () => {
+			const finishDrag = (commit: boolean) => {
 				if (dragStarted) {
 					stopForcingSpecificCursor();
 					onDraggingChange(false);
+				}
+
+				if (!commit) {
+					clearDragOverrides(cropDrag.nodePath);
+					return;
 				}
 
 				const changes = getSelectedOutlineCropDragChanges({
@@ -331,11 +337,13 @@ const CropHandle: React.FC<{
 					});
 			};
 
-			startCapturedPointerSession({
+			startEscapeCancelableCapturedPointerSession({
 				event,
 				captureTarget: event.currentTarget,
 				onMove: onPointerMove,
-				onEnd: onPointerUp,
+				onEnd: (reason, endEvent) => {
+					finishDrag(isPointerSessionRelease(reason, endEvent));
+				},
 			});
 		},
 		[
