@@ -36,6 +36,7 @@ export const SequencePropsObserver = ({
 		setPropStatuses,
 		updateDragOverrides,
 		remapDragOverrideFields,
+		remapEffectDragOverrideFields,
 	} = useContext(Internals.VisualModeSettersContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
@@ -109,7 +110,11 @@ export const SequencePropsObserver = ({
 		markDuplicationSelectionMutationsApplied(mutations, fastRefreshes);
 
 		remapCanvasDragPreviews(
-			{updateDragOverrides, remapDragOverrideFields},
+			{
+				updateDragOverrides,
+				remapDragOverrideFields,
+				remapEffectDragOverrideFields,
+			},
 			mutations,
 		);
 		remapSelectionNodePaths(mutations);
@@ -300,6 +305,7 @@ export const SequencePropsObserver = ({
 		remapPropStatuses,
 		updateDragOverrides,
 		remapDragOverrideFields,
+		remapEffectDragOverrideFields,
 		setOverrideIdToNodePath,
 	]);
 

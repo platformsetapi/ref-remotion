@@ -17,6 +17,7 @@ export const useSequencePropPreview = () => {
 			active.current = createCanvasDragPreview({
 				updateDragOverrides,
 				setPropStatuses,
+				setPropStatusesBatch: null,
 				getPropStatuses: (nodePath) =>
 					propStatusesRef.current[
 						Internals.makeSequencePropsSubscriptionKey(nodePath)

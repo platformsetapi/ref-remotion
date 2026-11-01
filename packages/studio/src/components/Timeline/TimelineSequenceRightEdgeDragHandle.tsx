@@ -32,10 +32,12 @@ import {startThresholdPointerSession} from '../../helpers/start-threshold-pointe
 import {TIMELINE_PADDING} from '../../helpers/timeline-layout';
 import {getCachedMediaMetadata} from '../../helpers/use-media-metadata';
 import {EditorSnappingContext} from '../../state/editor-snapping';
+import {createCanvasDragPreview} from '../canvas-drag-preview';
 import {
 	forceSpecificCursor,
 	stopForcingSpecificCursor,
 } from '../ForceSpecificCursor';
+import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import type {
 	MoveEffectKeyframeChange,
@@ -64,7 +66,7 @@ import {
 	type getTimelineTrimHandleLayout,
 } from './get-timeline-trim-handle-layout';
 import {
-	saveSequenceProps,
+	saveSequencePropsWithResult,
 	type SaveSequencePropChange,
 } from './save-sequence-prop';
 import {
@@ -2017,67 +2019,6 @@ export const getTimelineSequenceFromDragTargets = ({
 	return [...targets.values()];
 };
 
-const clearLeftEdgeDragOverrides = ({
-	clearDragOverrides,
-	targets,
-}: {
-	readonly clearDragOverrides: (nodePath: SequencePropsSubscriptionKey) => void;
-	readonly targets: readonly TimelineSequenceLeftEdgeDragTarget[];
-}) => {
-	for (const target of targets) {
-		clearDragOverrides(target.nodePath);
-		if (target.ripplePrevious) {
-			clearDragOverrides(target.ripplePrevious.nodePath);
-		}
-	}
-};
-
-const clearDurationDragOverrides = ({
-	clearDragOverrides,
-	targets,
-}: {
-	readonly clearDragOverrides: (nodePath: SequencePropsSubscriptionKey) => void;
-	readonly targets: readonly TimelineSequenceDurationDragTarget[];
-}) => {
-	for (const target of targets) {
-		clearDragOverrides(target.nodePath);
-	}
-};
-
-const clearFromDragOverrides = ({
-	clearDragOverrides,
-	clearEffectDragOverrides,
-	targets,
-}: {
-	readonly clearDragOverrides: (nodePath: SequencePropsSubscriptionKey) => void;
-	readonly clearEffectDragOverrides: (
-		nodePath: SequencePropsSubscriptionKey,
-		effectIndex: number,
-	) => void;
-	readonly targets: readonly TimelineSequenceFromDragTarget[];
-}) => {
-	for (const target of targets) {
-		clearDragOverrides(target.nodePath);
-		for (const keyframeTarget of target.sequenceKeyframes) {
-			clearDragOverrides(keyframeTarget.nodePath);
-		}
-
-		const clearedEffects = new Set<string>();
-		for (const keyframeTarget of target.effectKeyframes) {
-			const key = `${stringifySequenceSubscriptionKey(keyframeTarget.nodePath)}:${keyframeTarget.effectIndex}`;
-			if (clearedEffects.has(key)) {
-				continue;
-			}
-
-			clearedEffects.add(key);
-			clearEffectDragOverrides(
-				keyframeTarget.nodePath,
-				keyframeTarget.effectIndex,
-			);
-		}
-	}
-};
-
 const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 	readonly cursor: string;
 	readonly trimBeforeCursor: string;
@@ -2133,10 +2074,12 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 	onSelect,
 	selected,
 }) => {
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
-		Internals.VisualModeSettersContext,
-	);
-	const batchSetters = useContext(Internals.VisualModeBatchSettersContext);
+	const {
+		setPropStatuses,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
+	} = useContext(Internals.VisualModeSettersContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -2155,6 +2098,7 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 
 	const stopPointerSessionRef = useRef<(() => void) | null>(null);
 	const dragStateRef = useRef<{
+		preview: ReturnType<typeof createCanvasDragPreview>;
 		initialClientX: number;
 		latestDeltaFrames: number;
 		lastPreviewDeltaFrames: number;
@@ -2173,9 +2117,9 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 		nodePathInfo,
 		initialEdgeFrame,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
 		previewServerState,
 		onDragEnd,
 		onLimitChange,
@@ -2185,9 +2129,9 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 		nodePathInfo,
 		initialEdgeFrame,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
 		previewServerState,
 		onDragEnd,
 		onLimitChange,
@@ -2214,11 +2158,7 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 			latestRef.current.onSelect(dragState.selectionInteraction);
 		}
 
-		const {
-			setPropStatuses: latestSetPropStatuses,
-			clearDragOverrides: latestClear,
-			previewServerState: latestServerState,
-		} = latestRef.current;
+		const {previewServerState: latestServerState} = latestRef.current;
 
 		const changes = getTimelineSequenceLeftEdgeDragChanges({
 			targets: dragState.targets,
@@ -2232,18 +2172,26 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 			latestServerState.type !== 'connected' ||
 			changes.length === 0
 		) {
-			clearLeftEdgeDragOverrides({
-				clearDragOverrides: latestClear,
-				targets: dragState.targets,
-			});
+			dragState.preview.cancel();
 			return;
 		}
 
-		const savePromise = saveSequenceProps({
+		const currentChanges = changes.map((change) => {
+			const nodePath = dragState.preview.getNodePath(change.nodePath);
+			return nodePath === null
+				? null
+				: {...change, nodePath, fileName: nodePath.absolutePath};
+		});
+		if (currentChanges.some((change) => change === null)) {
+			dragState.preview.cancel();
+			return;
+		}
+
+		const savePromise = saveSequencePropsWithResult({
 			addedKeyframes: null,
 			movedKeyframes: null,
-			changes,
-			setPropStatuses: latestSetPropStatuses,
+			changes: currentChanges.filter(NoReactInternals.truthy),
+			setPropStatuses: dragState.preview.setPropStatuses,
 			clientId: latestServerState.clientId,
 			undoLabel:
 				dragState.mode === 'rolling'
@@ -2268,18 +2216,21 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 		});
 
 		savePromise
-			.catch((err) => {
-				Internals.Log.error(
-					{logLevel: 'error', tag: null},
-					'Could not save left edge drag',
-					err,
-				);
+			.then((response) => {
+				if (response && !response.canUpdate) {
+					throw new Error(
+						'The layer could not be updated. Try the edit again.',
+					);
+				}
+
+				dragState.preview.acknowledge(response);
 			})
-			.finally(() => {
-				clearLeftEdgeDragOverrides({
-					clearDragOverrides: latestClear,
-					targets: dragState.targets,
-				});
+			.catch((error) => {
+				dragState.preview.fail();
+				showNotification(
+					`Could not resize sequence: ${error instanceof Error ? error.message : String(error)}`,
+					4000,
+				);
 			});
 	}, []);
 
@@ -2410,6 +2361,15 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 					);
 
 					dragStateRef.current = {
+						preview: createCanvasDragPreview({
+							updateDragOverrides: latestRef.current.updateDragOverrides,
+							setPropStatuses: latestRef.current.setPropStatuses,
+							setPropStatusesBatch: latestRef.current.setPropStatusesBatch,
+							getPropStatuses: (path) =>
+								propStatusesRef.current[
+									Internals.makeSequencePropsSubscriptionKey(path)
+								],
+						}),
 						initialClientX: downEvent.clientX,
 						latestDeltaFrames: 0,
 						lastPreviewDeltaFrames: 0,
@@ -2651,19 +2611,10 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 						}
 
 						latestRef.current.onLimitChange(limitReason !== null);
-						if (updates.length > 0) {
-							if (latestRef.current.batchSetters) {
-								latestRef.current.batchSetters.setDragOverridesBatch(updates);
-							} else {
-								for (const update of updates) {
-									latestRef.current.setDragOverrides(
-										update.nodePath,
-										update.key,
-										update.value,
-									);
-								}
-							}
-						}
+						dragState.preview.setDragOverridesBatch(
+							updates,
+							latestRef.current.updateDragOverridesBatch,
+						);
 
 						if (dragState.didMove && draggedTarget) {
 							const {ripplePrevious} = draggedTarget;
@@ -2931,12 +2882,11 @@ export const useTimelineSequenceFromDrag = ({
 }) => {
 	const {
 		setPropStatuses,
-		setDragOverrides,
-		clearDragOverrides,
-		setEffectDragOverrides,
-		clearEffectDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
+		updateEffectDragOverridesBatch,
 	} = useContext(Internals.VisualModeSettersContext);
-	const batchSetters = useContext(Internals.VisualModeBatchSettersContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -2954,6 +2904,7 @@ export const useTimelineSequenceFromDrag = ({
 
 	const stopPointerSessionRef = useRef<(() => void) | null>(null);
 	const dragStateRef = useRef<{
+		preview: ReturnType<typeof createCanvasDragPreview>;
 		initialClientX: number;
 		latestDeltaFrames: number;
 		lastPreviewDeltaFrames: number;
@@ -2970,11 +2921,10 @@ export const useTimelineSequenceFromDrag = ({
 	const latestRef = useRef({
 		nodePathInfo,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
-		setEffectDragOverrides,
-		clearEffectDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
+		updateEffectDragOverridesBatch,
 		previewServerState,
 		editorSnapping,
 		onDragEnd,
@@ -2982,11 +2932,10 @@ export const useTimelineSequenceFromDrag = ({
 	latestRef.current = {
 		nodePathInfo,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
-		setEffectDragOverrides,
-		clearEffectDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
+		updateEffectDragOverridesBatch,
 		previewServerState,
 		editorSnapping,
 		onDragEnd,
@@ -3005,12 +2954,7 @@ export const useTimelineSequenceFromDrag = ({
 			clearDraggedKeyframes();
 			document.body.style.userSelect = '';
 			document.body.style.webkitUserSelect = '';
-			const {
-				setPropStatuses: latestSetPropStatuses,
-				clearDragOverrides: latestClear,
-				clearEffectDragOverrides: latestClearEffect,
-				previewServerState: latestServerState,
-			} = latestRef.current;
+			const {previewServerState: latestServerState} = latestRef.current;
 
 			const changes = getTimelineSequenceFromDragChanges({
 				targets: dragState.targets,
@@ -3028,11 +2972,34 @@ export const useTimelineSequenceFromDrag = ({
 					keyframeMoves.sequenceKeyframes.length === 0 &&
 					keyframeMoves.effectKeyframes.length === 0)
 			) {
-				clearFromDragOverrides({
-					clearDragOverrides: latestClear,
-					clearEffectDragOverrides: latestClearEffect,
-					targets: dragState.targets,
-				});
+				dragState.preview.cancel();
+				return;
+			}
+
+			const withCurrentNodePath = <
+				T extends {nodePath: SequencePropsSubscriptionKey; fileName: string},
+			>(
+				change: T,
+			): T | null => {
+				const nodePath = dragState.preview.getNodePath(change.nodePath);
+				return nodePath === null
+					? null
+					: {...change, nodePath, fileName: nodePath.absolutePath};
+			};
+
+			const currentChanges = changes.map(withCurrentNodePath);
+			const currentSequenceKeyframes =
+				keyframeMoves.sequenceKeyframes.map(withCurrentNodePath);
+			const currentEffectKeyframes =
+				keyframeMoves.effectKeyframes.map(withCurrentNodePath);
+			if (
+				[
+					...currentChanges,
+					...currentSequenceKeyframes,
+					...currentEffectKeyframes,
+				].some((change) => change === null)
+			) {
+				dragState.preview.cancel();
 				return;
 			}
 
@@ -3063,14 +3030,18 @@ export const useTimelineSequenceFromDrag = ({
 				);
 			}
 
-			const savePromise = saveSequenceProps({
+			const savePromise = saveSequencePropsWithResult({
 				addedKeyframes: null,
-				changes,
+				changes: currentChanges.filter(NoReactInternals.truthy),
 				movedKeyframes: {
-					sequenceKeyframes: keyframeMoves.sequenceKeyframes,
-					effectKeyframes: keyframeMoves.effectKeyframes,
+					sequenceKeyframes: currentSequenceKeyframes.filter(
+						NoReactInternals.truthy,
+					),
+					effectKeyframes: currentEffectKeyframes.filter(
+						NoReactInternals.truthy,
+					),
 				},
-				setPropStatuses: latestSetPropStatuses,
+				setPropStatuses: dragState.preview.setPropStatuses,
 				clientId: latestServerState.clientId,
 				undoLabel:
 					dragState.targets.length > 1
@@ -3083,19 +3054,21 @@ export const useTimelineSequenceFromDrag = ({
 			});
 
 			savePromise
-				.catch((err) => {
-					Internals.Log.error(
-						{logLevel: 'error', tag: null},
-						'Could not save from',
-						err,
-					);
+				.then((response) => {
+					if (response && !response.canUpdate) {
+						throw new Error(
+							'The layer could not be updated. Try the edit again.',
+						);
+					}
+
+					dragState.preview.acknowledge(response);
 				})
-				.finally(() => {
-					clearFromDragOverrides({
-						clearDragOverrides: latestClear,
-						clearEffectDragOverrides: latestClearEffect,
-						targets: dragState.targets,
-					});
+				.catch((error) => {
+					dragState.preview.fail();
+					showNotification(
+						`Could not move sequence: ${error instanceof Error ? error.message : String(error)}`,
+						4000,
+					);
 				});
 		},
 		[clearDraggedKeyframes, currentSelection, updateSnapFrameRef],
@@ -3142,6 +3115,15 @@ export const useTimelineSequenceFromDrag = ({
 			const draggedSelectionKey =
 				getTimelineSequenceSelectionKey(latestNodePathInfo);
 			dragStateRef.current = {
+				preview: createCanvasDragPreview({
+					updateDragOverrides: latestRef.current.updateDragOverrides,
+					setPropStatuses: latestRef.current.setPropStatuses,
+					setPropStatusesBatch: latestRef.current.setPropStatusesBatch,
+					getPropStatuses: (path) =>
+						propStatusesRef.current[
+							Internals.makeSequencePropsSubscriptionKey(path)
+						],
+				}),
 				initialClientX: e.clientX,
 				latestDeltaFrames: 0,
 				lastPreviewDeltaFrames: 0,
@@ -3276,34 +3258,14 @@ export const useTimelineSequenceFromDrag = ({
 							}
 						}
 
-						if (latestRef.current.batchSetters) {
-							latestRef.current.batchSetters.setDragOverridesBatch(updates);
-						} else {
-							for (const update of updates) {
-								latestRef.current.setDragOverrides(
-									update.nodePath,
-									update.key,
-									update.value,
-								);
-							}
-						}
-
-						if (effectUpdates.length > 0) {
-							if (latestRef.current.batchSetters) {
-								latestRef.current.batchSetters.setEffectDragOverridesBatch(
-									effectUpdates,
-								);
-							} else {
-								for (const update of effectUpdates) {
-									latestRef.current.setEffectDragOverrides(
-										update.nodePath,
-										update.effectIndex,
-										update.key,
-										update.value,
-									);
-								}
-							}
-						}
+						dragState.preview.setDragOverridesBatch(
+							updates,
+							latestRef.current.updateDragOverridesBatch,
+						);
+						dragState.preview.setEffectDragOverridesBatch(
+							effectUpdates,
+							latestRef.current.updateEffectDragOverridesBatch,
+						);
 					},
 					onEnd: (reason, endEvent) => {
 						stopPointerSessionRef.current = null;
@@ -3375,10 +3337,12 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 	onSelect,
 	selected,
 }) => {
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
-		Internals.VisualModeSettersContext,
-	);
-	const batchSetters = useContext(Internals.VisualModeBatchSettersContext);
+	const {
+		setPropStatuses,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
+	} = useContext(Internals.VisualModeSettersContext);
 	const updateSnapFrameRef = useContext(TimelineSnapIndicatorContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
@@ -3398,6 +3362,7 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 
 	const stopPointerSessionRef = useRef<(() => void) | null>(null);
 	const dragStateRef = useRef<{
+		preview: ReturnType<typeof createCanvasDragPreview>;
 		initialClientX: number;
 		latestDeltaFrames: number;
 		lastPreviewDeltaFrames: number;
@@ -3417,9 +3382,9 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 		mediaDurationDragLimits,
 		initialEdgeFrame,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
 		previewServerState,
 		onDragEnd,
 		onLimitChange,
@@ -3431,9 +3396,9 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 		mediaDurationDragLimits,
 		initialEdgeFrame,
 		setPropStatuses,
-		setDragOverrides,
-		batchSetters,
-		clearDragOverrides,
+		setPropStatusesBatch,
+		updateDragOverrides,
+		updateDragOverridesBatch,
 		previewServerState,
 		onDragEnd,
 		onLimitChange,
@@ -3462,11 +3427,7 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 			latestRef.current.onSelect(dragState.selectionInteraction);
 		}
 
-		const {
-			setPropStatuses: latestSetPropStatuses,
-			clearDragOverrides: latestClear,
-			previewServerState: latestServerState,
-		} = latestRef.current;
+		const {previewServerState: latestServerState} = latestRef.current;
 
 		const changes = getTimelineSequenceDurationDragChanges({
 			targets: dragState.targets,
@@ -3479,18 +3440,26 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 			latestServerState.type !== 'connected' ||
 			changes.length === 0
 		) {
-			clearDurationDragOverrides({
-				clearDragOverrides: latestClear,
-				targets: dragState.targets,
-			});
+			dragState.preview.cancel();
 			return;
 		}
 
-		const savePromise = saveSequenceProps({
+		const currentChanges = changes.map((change) => {
+			const nodePath = dragState.preview.getNodePath(change.nodePath);
+			return nodePath === null
+				? null
+				: {...change, nodePath, fileName: nodePath.absolutePath};
+		});
+		if (currentChanges.some((change) => change === null)) {
+			dragState.preview.cancel();
+			return;
+		}
+
+		const savePromise = saveSequencePropsWithResult({
 			addedKeyframes: null,
 			movedKeyframes: null,
-			changes,
-			setPropStatuses: latestSetPropStatuses,
+			changes: currentChanges.filter(NoReactInternals.truthy),
+			setPropStatuses: dragState.preview.setPropStatuses,
 			clientId: latestServerState.clientId,
 			undoLabel:
 				changes.length > 1 ? 'Resize selected sequences' : 'Resize sequence',
@@ -3501,18 +3470,21 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 		});
 
 		savePromise
-			.catch((err) => {
-				Internals.Log.error(
-					{logLevel: 'error', tag: null},
-					'Could not save durationInFrames',
-					err,
-				);
+			.then((response) => {
+				if (response && !response.canUpdate) {
+					throw new Error(
+						'The layer could not be updated. Try the edit again.',
+					);
+				}
+
+				dragState.preview.acknowledge(response);
 			})
-			.finally(() => {
-				clearDurationDragOverrides({
-					clearDragOverrides: latestClear,
-					targets: dragState.targets,
-				});
+			.catch((error) => {
+				dragState.preview.fail();
+				showNotification(
+					`Could not resize sequence: ${error instanceof Error ? error.message : String(error)}`,
+					4000,
+				);
 			});
 	}, []);
 
@@ -3605,6 +3577,15 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 						targets.map((target) => target.nodePath),
 					);
 					dragStateRef.current = {
+						preview: createCanvasDragPreview({
+							updateDragOverrides: latestRef.current.updateDragOverrides,
+							setPropStatuses: latestRef.current.setPropStatuses,
+							setPropStatusesBatch: latestRef.current.setPropStatusesBatch,
+							getPropStatuses: (path) =>
+								propStatusesRef.current[
+									Internals.makeSequencePropsSubscriptionKey(path)
+								],
+						}),
 						initialClientX: downEvent.clientX,
 						latestDeltaFrames: 0,
 						lastPreviewDeltaFrames: 0,
@@ -3696,19 +3677,10 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 						}
 
 						latestRef.current.onLimitChange(limitReason !== null);
-						if (updates.length > 0) {
-							if (latestRef.current.batchSetters) {
-								latestRef.current.batchSetters.setDragOverridesBatch(updates);
-							} else {
-								for (const update of updates) {
-									latestRef.current.setDragOverrides(
-										update.nodePath,
-										update.key,
-										update.value,
-									);
-								}
-							}
-						}
+						dragState.preview.setDragOverridesBatch(
+							updates,
+							latestRef.current.updateDragOverridesBatch,
+						);
 
 						if (dragState.didMove && draggedTarget) {
 							const previewValue = getTimelineSequenceDurationDragValue({

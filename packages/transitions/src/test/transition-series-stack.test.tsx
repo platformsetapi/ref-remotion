@@ -43,11 +43,14 @@ const visualModeSetters = {
 	updateDragOverrides: () => undefined,
 	updateDragOverridesBatch: () => undefined,
 	remapDragOverrideFields: () => undefined,
+	updateEffectDragOverridesBatch: () => undefined,
+	remapEffectDragOverrideFields: () => undefined,
 	clearDragOverrides: () => undefined,
 	setEffectDragOverrides: () => undefined,
 	clearEffectDragOverrides: () => undefined,
 	remapPropStatuses: () => undefined,
 	setPropStatuses: () => undefined,
+	setPropStatusesBatch: () => undefined,
 };
 
 const ObserveSequenceRegistrations: React.FC<{

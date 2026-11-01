@@ -37,7 +37,7 @@ import {
 	persistGuidesList,
 	type Guide,
 } from '../state/editor-guides';
-import {loadLoopOption} from '../state/loop';
+import {loadLoopOption, loopSetterRef, persistLoopOption} from '../state/loop';
 import {persistMuteOption} from '../state/mute';
 import {commonPlaybackRates, persistPlaybackRate} from '../state/playbackrate';
 import {TimelineZoomCtx} from '../state/timeline-zoom';
@@ -277,6 +277,9 @@ export const WebMcp: FC = () => {
 	const selectedSequenceRef = useRef<WebMcpSequence | null>(null);
 	const {canvasContent, compositions, currentCompositionMetadata, folders} =
 		useContext(Internals.CompositionManager);
+	const compositionManagerRef = useContext(
+		Internals.CompositionManagerRefContext,
+	);
 	const {playbackRate: currentPlaybackRate, setPlaybackRate} =
 		Internals.usePlaybackRate();
 	const {isPlaying} = Internals.Timeline.useTimelineContext();
@@ -354,6 +357,40 @@ export const WebMcp: FC = () => {
 		}
 
 		const controller = new AbortController();
+		const getCurrentPlaybackTarget = () => {
+			const compositionId = currentCompositionRef.current;
+			if (compositionId !== null) {
+				return {id: compositionId, durationInFrames: getCurrentDuration()};
+			}
+
+			const content = currentContentRef.current;
+			const {currentAssetMetadata} = compositionManagerRef.current;
+			if (
+				content?.type === 'asset' &&
+				currentAssetMetadata?.asset === content.asset
+			) {
+				return {
+					id: `asset:${content.asset}`,
+					durationInFrames: currentAssetMetadata.durationInFrames,
+				};
+			}
+
+			return null;
+		};
+
+		const requireCurrentPlaybackTarget = () => {
+			const target = getCurrentPlaybackTarget();
+			if (target === null) {
+				throw new Error(
+					currentContentRef.current?.type === 'asset'
+						? 'The current asset does not have a ready audio or video preview.'
+						: 'No composition or audio/video asset preview is currently selected.',
+				);
+			}
+
+			return target;
+		};
+
 		const getCurrentTimeline = () => {
 			const composition = currentCompositionDefinitionRef.current;
 			if (composition === null) {
@@ -1264,7 +1301,7 @@ export const WebMcp: FC = () => {
 					name: 'get_playback_state',
 					title: 'Get Studio playback state',
 					description:
-						'Read the current frame, playing state, audio state, playback rate, looping state, and normalized timeline zoom for the composition open in Remotion Studio. All playback fields are null when the canvas is not showing a composition.',
+						'Read the current frame, playing state, audio state, playback rate, looping state, and normalized timeline zoom for the composition or ready audio/video asset preview open in Remotion Studio. All playback fields are null for other canvas content or assets whose preview metadata is not ready.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1272,8 +1309,8 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: true},
 					execute: () => {
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
+						const target = getCurrentPlaybackTarget();
+						if (target === null) {
 							return Promise.resolve({
 								currentContent: currentContentRef.current,
 								currentFrame: null,
@@ -1286,7 +1323,7 @@ export const WebMcp: FC = () => {
 							});
 						}
 
-						const durationInFrames = getCurrentDuration();
+						const {durationInFrames} = target;
 						const timelineViewportWidth =
 							scrollableRef.current?.clientWidth ?? 0;
 						const minZoom = getTimelineMinZoom({
@@ -1296,7 +1333,7 @@ export const WebMcp: FC = () => {
 						const timelineZoom = getTimelineZoom({
 							durationInFrames,
 							timelineViewportWidth,
-							zoom: timelineZoomRef.current[compositionId] ?? null,
+							zoom: timelineZoomRef.current[target.id] ?? null,
 						});
 
 						return Promise.resolve({
@@ -1550,9 +1587,9 @@ export const WebMcp: FC = () => {
 			modelContext.registerTool(
 				{
 					name: 'play',
-					title: 'Play Studio composition',
+					title: 'Play Studio preview',
 					description:
-						'Start playing the current Remotion Studio composition from the current frame.',
+						'Start playing the current Remotion Studio composition or ready audio/video asset preview from the current frame.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1560,14 +1597,11 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: false},
 					execute: () => {
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
+						const {durationInFrames} = requireCurrentPlaybackTarget();
 
-						if (getCurrentDuration() <= 1) {
+						if (durationInFrames <= 1) {
 							throw new Error(
-								'The current composition is a still and cannot play.',
+								'The current preview has only one frame and cannot play.',
 							);
 						}
 
@@ -1587,9 +1621,9 @@ export const WebMcp: FC = () => {
 			modelContext.registerTool(
 				{
 					name: 'pause',
-					title: 'Pause Studio composition',
+					title: 'Pause Studio preview',
 					description:
-						'Pause the current Remotion Studio composition at the current frame.',
+						'Pause the current Remotion Studio composition or ready audio/video asset preview at the current frame.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1597,10 +1631,7 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: false},
 					execute: () => {
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
+						requireCurrentPlaybackTarget();
 
 						if (Internals.timeValueRef.current === null) {
 							throw new Error('Studio playback controls are not ready.');
@@ -1618,9 +1649,9 @@ export const WebMcp: FC = () => {
 			modelContext.registerTool(
 				{
 					name: 'mute',
-					title: 'Mute Studio composition',
+					title: 'Mute Studio preview',
 					description:
-						'Mute audio playback for the current Remotion Studio composition.',
+						'Mute audio playback for the current Remotion Studio composition or ready audio/video asset preview.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1628,10 +1659,7 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: false},
 					execute: () => {
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
+						requireCurrentPlaybackTarget();
 
 						setPlayerMuted(true);
 						persistMuteOption(true);
@@ -1646,9 +1674,9 @@ export const WebMcp: FC = () => {
 			modelContext.registerTool(
 				{
 					name: 'unmute',
-					title: 'Unmute Studio composition',
+					title: 'Unmute Studio preview',
 					description:
-						'Unmute audio playback for the current Remotion Studio composition.',
+						'Unmute audio playback for the current Remotion Studio composition or ready audio/video asset preview.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1656,10 +1684,7 @@ export const WebMcp: FC = () => {
 					},
 					annotations: {readOnlyHint: false},
 					execute: () => {
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
+						requireCurrentPlaybackTarget();
 
 						setPlayerMuted(false);
 						persistMuteOption(false);
@@ -1676,7 +1701,7 @@ export const WebMcp: FC = () => {
 					name: 'set_timeline_zoom',
 					title: 'Set Studio timeline zoom',
 					description:
-						'Set the timeline zoom for the current Remotion Studio composition. Use 0 for fully zoomed out and 1 for the maximum zoom supported by the composition duration.',
+						'Set the timeline zoom for the current Remotion Studio composition or ready audio/video asset preview. Use 0 for fully zoomed out and 1 for the maximum zoom supported by the preview duration.',
 					inputSchema: {
 						type: 'object',
 						properties: {
@@ -1702,15 +1727,10 @@ export const WebMcp: FC = () => {
 							throw new Error('zoom must be a finite number between 0 and 1.');
 						}
 
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
-
-						const durationInFrames = getCurrentDuration();
+						const {id, durationInFrames} = requireCurrentPlaybackTarget();
 						if (durationInFrames <= 1) {
 							throw new Error(
-								'The current composition is a still and has no timeline zoom.',
+								'The current preview has only one frame and has no timeline zoom.',
 							);
 						}
 
@@ -1728,7 +1748,7 @@ export const WebMcp: FC = () => {
 							durationInFrames,
 							timelineViewportWidth,
 						});
-						setTimelineZoom(compositionId, () => timelineZoom, {
+						setTimelineZoom(id, () => timelineZoom, {
 							anchorFrame: null,
 							anchorContentX: null,
 						});
@@ -1746,10 +1766,56 @@ export const WebMcp: FC = () => {
 			),
 			modelContext.registerTool(
 				{
+					name: 'set_looping',
+					title: 'Set Studio looping',
+					description:
+						'Enable or disable looping for the current Remotion Studio composition or ready audio/video asset preview. This updates the Loop control and persists the playback preference.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							looping: {
+								type: 'boolean',
+								description: 'Whether playback should loop at the end.',
+							},
+						},
+						required: ['looping'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: ({looping}) => {
+						if (typeof looping !== 'boolean') {
+							throw new Error('looping must be a boolean.');
+						}
+
+						const {durationInFrames} = requireCurrentPlaybackTarget();
+						if (durationInFrames <= 1) {
+							throw new Error(
+								'The current preview has only one frame and cannot loop.',
+							);
+						}
+
+						if (loopSetterRef.current === null) {
+							throw new Error('Studio playback controls are not ready.');
+						}
+
+						loopSetterRef.current(() => {
+							persistLoopOption(looping);
+							return looping;
+						});
+						return Promise.resolve({
+							currentContent: currentContentRef.current,
+							looping,
+						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
 					name: 'set_playback_rate',
 					title: 'Set Studio playback rate',
 					description:
-						'Set the playback rate for the current Remotion Studio composition. Negative values play the composition backwards.',
+						'Set the playback rate for the current Remotion Studio composition or ready audio/video asset preview. Negative values play backwards.',
 					inputSchema: {
 						type: 'object',
 						properties: {
@@ -1774,10 +1840,7 @@ export const WebMcp: FC = () => {
 							);
 						}
 
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
-						}
+						requireCurrentPlaybackTarget();
 
 						setPlaybackRate(() => playbackRate);
 						persistPlaybackRate(playbackRate);
@@ -1794,7 +1857,7 @@ export const WebMcp: FC = () => {
 					name: 'seek_to_frame',
 					title: 'Seek Studio timeline',
 					description:
-						'Seek the current Remotion Studio composition to a frame. Frames past the end of the composition are clamped to the final frame.',
+						'Seek the current Remotion Studio composition or ready audio/video asset preview to a frame. Frames past the end of the preview are clamped to the final frame.',
 					inputSchema: {
 						type: 'object',
 						properties: {
@@ -1813,14 +1876,14 @@ export const WebMcp: FC = () => {
 							throw new Error('frame must be an integer.');
 						}
 
-						const compositionId = currentCompositionRef.current;
-						if (compositionId === null) {
-							throw new Error('No composition is currently selected.');
+						const {durationInFrames} = requireCurrentPlaybackTarget();
+						if (Internals.timeValueRef.current === null) {
+							throw new Error('Studio playback controls are not ready.');
 						}
 
 						const currentFrame = Math.min(
 							Math.max(0, frame),
-							getCurrentDuration() - 1,
+							durationInFrames - 1,
 						);
 						seek(currentFrame);
 						return Promise.resolve({
@@ -1840,6 +1903,7 @@ export const WebMcp: FC = () => {
 		addCaptionJob,
 		addVideoMattingJob,
 		calculateTimeline,
+		compositionManagerRef,
 		isPlaying,
 		selectComposition,
 		sequencesRef,

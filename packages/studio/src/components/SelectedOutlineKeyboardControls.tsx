@@ -235,6 +235,7 @@ export const SelectedOutlineKeyboardControls: React.FC<{
 				createCanvasDragPreview({
 					updateDragOverrides,
 					setPropStatuses,
+					setPropStatusesBatch: null,
 					getPropStatuses: (nodePath) =>
 						propStatusesRef.current[
 							Internals.makeSequencePropsSubscriptionKey(nodePath)

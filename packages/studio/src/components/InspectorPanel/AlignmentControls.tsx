@@ -240,6 +240,7 @@ const AlignmentControlsUnmemoized: React.FC<{
 			const preview = createCanvasDragPreview({
 				updateDragOverrides,
 				setPropStatuses,
+				setPropStatusesBatch: null,
 				getPropStatuses: (path) =>
 					propStatusesRef.current[
 						Internals.makeSequencePropsSubscriptionKey(path)

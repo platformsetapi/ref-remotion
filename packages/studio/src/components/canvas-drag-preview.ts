@@ -23,6 +23,8 @@ type Layer = {
 type Field = {
 	nodePath: SequencePropsSubscriptionKey;
 	key: string;
+	effectIndex: number | null;
+	update: Setters['updateDragOverrides'];
 	layers: Layer[];
 	visible: DragOverrideValue | null;
 	sourceStatus: CanUpdateSequencePropSource | null;
@@ -33,19 +35,34 @@ type Store = {
 	remapRevision: number;
 };
 const stores = new WeakMap<Setters['updateDragOverrides'], Store>();
-const fieldKey = (nodePath: SequencePropsSubscriptionKey, key: string) =>
-	`${Internals.makeSequencePropsSubscriptionKey(nodePath)}\0${key}`;
+const fieldKey = (
+	nodePath: SequencePropsSubscriptionKey,
+	key: string,
+	effectIndex: number | null,
+) =>
+	`${Internals.makeSequencePropsSubscriptionKey(nodePath)}\0${effectIndex ?? 'sequence'}\0${key}`;
+
+const getFieldStatus = (
+	response: CanUpdateSequencePropsResponse | undefined,
+	key: string,
+	effectIndex: number | null,
+) => {
+	if (!response?.canUpdate) return null;
+	if (effectIndex === null) return response.props[key] ?? null;
+	const effect = response.effects[effectIndex];
+	return effect?.canUpdate ? (effect.props[key] ?? null) : null;
+};
 
 const publishField = (
-	update: Setters['updateDragOverrides'],
 	field: Field,
 	force: boolean,
+	update: Setters['updateDragOverrides'] | null,
 ) => {
 	const previous = field.visible;
 	const next = field.layers.at(-1)?.value ?? null;
 	field.visible = next;
 	if (previous === next) return;
-	update(field.nodePath, (current) => {
+	(update ?? field.update)(field.nodePath, (current) => {
 		if (!force && current[field.key] !== previous) return current;
 		const values = {...current};
 		if (next === null) delete values[field.key];
@@ -54,22 +71,90 @@ const publishField = (
 	});
 };
 
-const reconcileField = (
-	store: Store,
-	update: Setters['updateDragOverrides'],
+const getFieldStatusRestoration = (
 	field: Field,
-) => {
-	const confirmed = field.layers.findLastIndex(
-		(layer) =>
-			layer.acknowledged && deepEqual(layer.savedStatus, field.sourceStatus),
-	);
+): Parameters<Setters['setPropStatusesBatch']>[0][number] => {
+	const fallback =
+		field.layers.findLast((candidate) => candidate.optimisticStatus !== null)
+			?.optimisticStatus ?? field.sourceStatus;
+	const ownedStatuses = new Set(field.ownedStatuses);
+	return {
+		nodePath: field.nodePath,
+		update: (previous) => {
+			const previousStatus = getFieldStatus(
+				previous,
+				field.key,
+				field.effectIndex,
+			);
+			if (
+				!previous?.canUpdate ||
+				previousStatus === null ||
+				!ownedStatuses.has(previousStatus) ||
+				deepEqual(previousStatus, fallback)
+			)
+				return previous;
+			const effect =
+				field.effectIndex === null ? null : previous.effects[field.effectIndex];
+			if (effect && !effect.canUpdate) return previous;
+			const props = {...(effect?.canUpdate ? effect.props : previous.props)};
+			if (fallback) props[field.key] = fallback;
+			else delete props[field.key];
+			if (field.effectIndex === null) return {...previous, props};
+			if (!effect?.canUpdate) return previous;
+			const effects = [...previous.effects];
+			effects[field.effectIndex] = {...effect, props};
+			return {...previous, effects};
+		},
+	};
+};
+
+const reconcileField = (store: Store, field: Field) => {
+	const confirmed = field.layers.findLastIndex((layer) => {
+		if (!layer.acknowledged) return false;
+		if (deepEqual(layer.savedStatus, field.sourceStatus)) return true;
+		if (
+			field.effectIndex === null ||
+			layer.savedStatus?.status !== 'keyframed' ||
+			field.sourceStatus?.status !== 'keyframed'
+		)
+			return false;
+		// Effect moves do not return their parsed statuses. Compare their
+		// evaluated animation while allowing the codemod to preserve an
+		// equivalent source expression. The authoritative source stays intact.
+		const evaluated = Internals.evaluateSourcePropStatuses(
+			{saved: layer.savedStatus, source: field.sourceStatus},
+			field.nodePath.videoConfigValues,
+		);
+		if (
+			evaluated.saved.status !== 'keyframed' ||
+			evaluated.source.status !== 'keyframed'
+		)
+			return false;
+		return deepEqual(
+			{
+				...evaluated.saved,
+				keyframes: evaluated.saved.keyframes.map((keyframe) => ({
+					...keyframe,
+					frameExpression: null,
+				})),
+			},
+			{
+				...evaluated.source,
+				keyframes: evaluated.source.keyframes.map((keyframe) => ({
+					...keyframe,
+					frameExpression: null,
+				})),
+			},
+		);
+	});
 	if (confirmed !== -1) field.layers = field.layers.slice(confirmed + 1);
-	publishField(update, field, false);
+	publishField(field, false, null);
 	if (
 		field.layers.length === 0 &&
-		store.fields.get(fieldKey(field.nodePath, field.key)) === field
+		store.fields.get(fieldKey(field.nodePath, field.key, field.effectIndex)) ===
+			field
 	)
-		store.fields.delete(fieldKey(field.nodePath, field.key));
+		store.fields.delete(fieldKey(field.nodePath, field.key, field.effectIndex));
 };
 
 // Source notifications may acknowledge an older queued edit. Preserve the latest
@@ -81,31 +166,54 @@ export const reconcileCanvasDragPreviewStatuses = (
 ): CanUpdateSequencePropsResponse => {
 	const store = stores.get(update);
 	if (!store || !response.canUpdate) return response;
-	let {props} = response;
-	for (const [key, status] of Object.entries(response.props)) {
-		const field = store.fields.get(fieldKey(nodePath, key));
-		if (!field) continue;
-		field.sourceStatus = status;
-		reconcileField(store, update, field);
-		const pending = field.layers.findLast(
-			(layer) => layer.optimisticStatus !== null,
-		)?.optimisticStatus;
-		if (pending) {
-			if (props === response.props) props = {...props};
-			props[key] = pending;
+	const reconcileProps = (
+		source: typeof response.props,
+		effectIndex: number | null,
+	) => {
+		let reconciledProps = source;
+		for (const [key, status] of Object.entries(source)) {
+			const field = store.fields.get(fieldKey(nodePath, key, effectIndex));
+			if (!field) continue;
+			field.sourceStatus = status;
+			reconcileField(store, field);
+			const pending = field.layers.findLast(
+				(layer) => layer.optimisticStatus !== null,
+			)?.optimisticStatus;
+			if (pending) {
+				if (reconciledProps === source) reconciledProps = {...reconciledProps};
+				reconciledProps[key] = pending;
+			}
+		}
+
+		return reconciledProps;
+	};
+
+	const props = reconcileProps(response.props, null);
+	let {effects} = response;
+	for (let index = 0; index < response.effects.length; index++) {
+		const effect = response.effects[index];
+		if (!effect.canUpdate) continue;
+		const effectProps = reconcileProps(effect.props, index);
+		if (effectProps !== effect.props) {
+			if (effects === response.effects) effects = [...effects];
+			effects[index] = {...effect, props: effectProps};
 		}
 	}
 
-	return props === response.props ? response : {...response, props};
+	return props === response.props && effects === response.effects
+		? response
+		: {...response, props, effects};
 };
 
 export const createCanvasDragPreview = ({
 	updateDragOverrides,
 	setPropStatuses,
+	setPropStatusesBatch,
 	getPropStatuses,
 }: {
 	updateDragOverrides: Setters['updateDragOverrides'];
 	setPropStatuses: SetPropStatuses;
+	setPropStatusesBatch: Setters['setPropStatusesBatch'] | null;
 	getPropStatuses: (
 		nodePath: SequencePropsSubscriptionKey,
 	) => CanUpdateSequencePropsResponse | undefined;
@@ -122,69 +230,96 @@ export const createCanvasDragPreview = ({
 	let indexedOwnedSize = -1;
 	let indexedRemapRevision = -1;
 	let ended = false;
+	const effectWriters = new Map<number, Setters['updateDragOverrides']>();
+	const restoreStatuses = (
+		updates: Parameters<Setters['setPropStatusesBatch']>[0],
+	) => {
+		if (updates.length === 0) return;
+		if (setPropStatusesBatch) {
+			setPropStatusesBatch(updates);
+			return;
+		}
+
+		for (const {nodePath, update} of updates) setPropStatuses(nodePath, update);
+	};
+
 	const getNodePath = (nodePath: SequencePropsSubscriptionKey) => {
 		const original = originalNodes.get(
 			Internals.makeSequencePropsSubscriptionKey(nodePath),
 		);
 		if (!original) return nodePath;
-		return original.field.layers.includes(original.layer)
-			? original.field.nodePath
-			: null;
+		if (!original.field.layers.includes(original.layer)) return null;
+		const current = original.field.nodePath;
+		// The source location is shared, but callers can carry different runtime
+		// video configurations for evaluating their keyframe expressions.
+		return current.absolutePath === nodePath.absolutePath &&
+			current.nodePath === nodePath.nodePath
+			? nodePath
+			: {
+					...nodePath,
+					absolutePath: current.absolutePath,
+					nodePath: current.nodePath,
+				};
 	};
 
 	const remove = () => {
 		if (ended) return;
 		ended = true;
+		const restorations: Parameters<
+			Setters['setPropStatusesBatch']
+		>[0][number][] = [];
 		for (const [field, layer] of owned) {
 			if (!field.layers.includes(layer)) continue;
 			field.layers = field.layers.filter((candidate) => candidate !== layer);
-			const fallback =
-				field.layers.findLast(
-					(candidate) => candidate.optimisticStatus !== null,
-				)?.optimisticStatus ?? field.sourceStatus;
-			const ownedStatuses = new Set(field.ownedStatuses);
-			setPropStatuses(field.nodePath, (previous) => {
-				if (
-					!previous?.canUpdate ||
-					!ownedStatuses.has(previous.props[field.key])
-				)
-					return previous;
-				const props = {...previous.props};
-				if (fallback) props[field.key] = fallback;
-				else delete props[field.key];
-				return {...previous, props};
-			});
-			publishField(updateDragOverrides, field, false);
+			restorations.push(getFieldStatusRestoration(field));
+			publishField(field, false, null);
 			if (
 				field.layers.length === 0 &&
-				store.fields.get(fieldKey(field.nodePath, field.key)) === field
+				store.fields.get(
+					fieldKey(field.nodePath, field.key, field.effectIndex),
+				) === field
 			)
-				store.fields.delete(fieldKey(field.nodePath, field.key));
+				store.fields.delete(
+					fieldKey(field.nodePath, field.key, field.effectIndex),
+				);
 		}
+
+		restoreStatuses(restorations);
 	};
 
-	const setDragOverrides = (
-		nodePath: SequencePropsSubscriptionKey,
-		key: string,
-		value: DragOverrideValue,
-		update: Setters['updateDragOverrides'],
-	) => {
+	const setDragOverrides = ({
+		nodePath,
+		key,
+		value,
+		effectIndex,
+		update,
+		publishUpdate,
+	}: {
+		nodePath: SequencePropsSubscriptionKey;
+		key: string;
+		value: DragOverrideValue;
+		effectIndex: number | null;
+		update: Setters['updateDragOverrides'];
+		publishUpdate: Setters['updateDragOverrides'];
+	}) => {
 		if (ended) return;
 		const originalNodeKey =
 			Internals.makeSequencePropsSubscriptionKey(nodePath);
 		const currentNodePath = getNodePath(nodePath);
 		if (currentNodePath === null) return;
 		nodePath = currentNodePath;
-		const mapKey = fieldKey(nodePath, key);
+		const mapKey = fieldKey(nodePath, key, effectIndex);
 		let field = store.fields.get(mapKey);
 		if (!field) {
 			const status = getPropStatuses(nodePath);
 			field = {
 				nodePath,
 				key,
+				effectIndex,
+				update,
 				layers: [],
 				visible: null,
-				sourceStatus: status?.canUpdate ? (status.props[key] ?? null) : null,
+				sourceStatus: getFieldStatus(status, key, effectIndex),
 				ownedStatuses: new Set(),
 			};
 			store.fields.set(mapKey, field);
@@ -212,7 +347,7 @@ export const createCanvasDragPreview = ({
 			layer.value = value;
 		}
 
-		publishField(update, field, true);
+		publishField(field, true, publishUpdate);
 	};
 
 	return {
@@ -221,7 +356,15 @@ export const createCanvasDragPreview = ({
 			nodePath: SequencePropsSubscriptionKey,
 			key: string,
 			value: DragOverrideValue,
-		) => setDragOverrides(nodePath, key, value, updateDragOverrides),
+		) =>
+			setDragOverrides({
+				nodePath,
+				key,
+				value,
+				effectIndex: null,
+				update: updateDragOverrides,
+				publishUpdate: updateDragOverrides,
+			}),
 		setDragOverridesBatch: (
 			values: readonly {
 				nodePath: SequencePropsSubscriptionKey;
@@ -238,7 +381,43 @@ export const createCanvasDragPreview = ({
 			};
 
 			for (const value of values)
-				setDragOverrides(value.nodePath, value.key, value.value, collect);
+				setDragOverrides({
+					...value,
+					effectIndex: null,
+					update: updateDragOverrides,
+					publishUpdate: collect,
+				});
+			if (updates.length > 0) updateBatch(updates);
+		},
+		setEffectDragOverridesBatch: (
+			values: readonly {
+				nodePath: SequencePropsSubscriptionKey;
+				effectIndex: number;
+				key: string;
+				value: DragOverrideValue;
+			}[],
+			updateBatch: Setters['updateEffectDragOverridesBatch'],
+		) => {
+			const updates: Parameters<
+				Setters['updateEffectDragOverridesBatch']
+			>[0][number][] = [];
+			for (const value of values) {
+				const {effectIndex} = value;
+				let writer = effectWriters.get(effectIndex);
+				if (!writer) {
+					writer = (nodePath, update) =>
+						updateBatch([{nodePath, effectIndex, update}]);
+					effectWriters.set(effectIndex, writer);
+				}
+
+				setDragOverrides({
+					...value,
+					update: writer,
+					publishUpdate: (nodePath, update) =>
+						updates.push({nodePath, effectIndex, update}),
+				});
+			}
+
 			if (updates.length > 0) updateBatch(updates);
 		},
 		setPropStatuses: ((nodePath, apply) => {
@@ -278,7 +457,11 @@ export const createCanvasDragPreview = ({
 								Internals.makeSequencePropsSubscriptionKey(nodePath)
 						)
 							continue;
-						layer.optimisticStatus = next.props[field.key] ?? null;
+						layer.optimisticStatus = getFieldStatus(
+							next,
+							field.key,
+							field.effectIndex,
+						);
 						if (layer.optimisticStatus)
 							field.ownedStatuses.add(layer.optimisticStatus);
 					}
@@ -302,21 +485,35 @@ export const createCanvasDragPreview = ({
 				if (!results.has(key)) results.set(key, item);
 			}
 
+			const restorations: Parameters<
+				Setters['setPropStatusesBatch']
+			>[0][number][] = [];
 			for (const [field, layer] of owned) {
 				if (!field.layers.includes(layer)) continue;
 				const result = results.get(
 					Internals.makeSequencePropsSubscriptionKey(field.nodePath),
 				);
 				layer.acknowledged = true;
-				layer.savedStatus = result?.props[field.key] ?? layer.optimisticStatus;
-				reconcileField(store, updateDragOverrides, field);
+				layer.savedStatus =
+					(field.effectIndex === null ? result?.props[field.key] : null) ??
+					layer.optimisticStatus;
+				reconcileField(store, field);
+				if (!field.layers.includes(layer))
+					restorations.push(getFieldStatusRestoration(field));
 			}
+
+			restoreStatuses(restorations);
 		},
 	};
 };
 
 export const remapCanvasDragPreviews = (
-	setters: Pick<Setters, 'updateDragOverrides' | 'remapDragOverrideFields'>,
+	setters: Pick<
+		Setters,
+		| 'updateDragOverrides'
+		| 'remapDragOverrideFields'
+		| 'remapEffectDragOverrideFields'
+	>,
 	mutations: readonly SequenceNodePathMutation[],
 ) => {
 	const store = stores.get(setters.updateDragOverrides);
@@ -351,23 +548,46 @@ export const remapCanvasDragPreviews = (
 		});
 		if (moves.length > 0) store.remapRevision++;
 		setters.remapDragOverrideFields(
-			moves.map((move) => ({
-				previousNodePath: move.previousNodePath,
-				nodePath: move.nodePath,
-				fields: move.field.visible
-					? {[move.field.key]: move.field.visible}
-					: {},
-			})),
+			moves
+				.filter((move) => move.field.effectIndex === null)
+				.map((move) => ({
+					previousNodePath: move.previousNodePath,
+					nodePath: move.nodePath,
+					fields: move.field.visible
+						? {[move.field.key]: move.field.visible}
+						: {},
+				})),
+		);
+		setters.remapEffectDragOverrideFields(
+			moves.flatMap((move) =>
+				move.field.effectIndex === null
+					? []
+					: [
+							{
+								previousNodePath: move.previousNodePath,
+								nodePath: move.nodePath,
+								effectIndex: move.field.effectIndex,
+								fields: move.field.visible
+									? {[move.field.key]: move.field.visible}
+									: {},
+							},
+						],
+			),
 		);
 		for (const move of moves)
-			store.fields.delete(fieldKey(move.previousNodePath, move.field.key));
+			store.fields.delete(
+				fieldKey(move.previousNodePath, move.field.key, move.field.effectIndex),
+			);
 		for (const move of moves) {
 			if (move.nodePath === null) {
 				move.field.layers = [];
 				move.field.visible = null;
 			} else {
 				move.field.nodePath = move.nodePath;
-				store.fields.set(fieldKey(move.nodePath, move.field.key), move.field);
+				store.fields.set(
+					fieldKey(move.nodePath, move.field.key, move.field.effectIndex),
+					move.field,
+				);
 			}
 		}
 	}

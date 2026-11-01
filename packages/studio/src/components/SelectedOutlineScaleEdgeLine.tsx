@@ -115,6 +115,7 @@ export const SelectedOutlineScaleEdgeLine: React.FC<{
 			const preview = createCanvasDragPreview({
 				updateDragOverrides,
 				setPropStatuses,
+				setPropStatusesBatch: null,
 				getPropStatuses: (nodePath) =>
 					propStatusesRef.current[
 						Internals.makeSequencePropsSubscriptionKey(nodePath)
