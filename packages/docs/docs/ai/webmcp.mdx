@@ -15,7 +15,7 @@ Agents can:
 
 - See which items you currently have selected
 - See selectable items and select them
-- Move, trim, duplicate or split sequences and inspect pending edits
+- Duplicate sequences and inspect pending edits
 - See available compositions and navigate to them
 - Inspect render jobs, cancel queued or running renders, and reopen saved render settings
 - Read the error currently shown in the Studio error overlay
@@ -23,7 +23,7 @@ Agents can:
 - See current outlines of elements and their geometry
 - Get your current playhead position and playback state
 - Play, pause and seek
-- Set timeline zoom, playback rate, looping, and mute state
+- Set timeline zoom, playback rate, looping, volume and mute state
 - See, add and remove guides
 - Install packages into the current project
 - Transcribe audio and video assets
@@ -47,9 +47,9 @@ The shape of inputs and outputs is not currently stable.
 :::
 
 Tools that edit sequences or guides require a composition to be open.
-Playback tools work with compositions and, from <AvailableFrom v="4.0.540" inline />, audio and video asset previews after their metadata loads. Images, text files and rendered-output previews are not supported by playback tools.
+Playback tools work with compositions and, from <AvailableFrom v="4.0.540" inline />, ready audio and video asset and rendered-output previews. This includes local browser-rendered outputs. Images, image-sequence directories and text files are not supported by playback tools.
 
-Playback tools run locally in all four Studio modes: regular, detached, read-only deployed and Browser Studio. They require a ready preview, not an attached Studio server.
+Playback tools run locally in all four Studio modes: regular, detached, read-only deployed and Browser Studio. They require a ready preview, not an attached Studio server. Rendered outputs use their native audio/video controls and keep their own volume, mute, rate and loop settings. They have no timeline zoom and do not support reverse playback.
 
 ### `install_package`<AvailableFrom v="4.0.523" />
 
@@ -417,7 +417,7 @@ type CompositionTreeItem =
 
 ### `select_composition`
 
-Opens a registered composition by ID.
+Opens a registered composition by ID. From <AvailableFrom v="4.0.540" inline />, the tool acknowledges after the canvas selection has committed, so a following tool targets that composition. Preview metadata and media may still be loading.
 
 ```ts title="Input"
 {
@@ -494,7 +494,7 @@ Returns the timeline sequences mounted for the current composition, including th
 
 #### `pendingTimingEdits`<AvailableFrom v="4.0.540" />
 
-Timing edits awaiting a save response in this Studio tab, including edits started through the timeline or WebMCP. The preview updates immediately. A request leaves this list when it succeeds or fails; an empty list does not guarantee the preview has finished refreshing. Later edits can supersede an earlier preview while its request remains pending.
+Timing edits started through the timeline and awaiting a save response in this Studio tab. The preview updates immediately. A request leaves this list when it succeeds or fails; an empty list does not guarantee the preview has finished refreshing. Later edits can supersede an earlier preview while its request remains pending.
 
 ##### `id`
 
@@ -502,7 +502,7 @@ An identifier for the pending request within the current Studio tab.
 
 ##### `operation`
 
-`move`, `trim-start`, `trim-end`, or `slip-source`. Source slipping is available through the timeline; the tools below expose moving and start/end trimming.
+`move`, `trim-start`, `trim-end`, or `slip-source`.
 
 ##### `nodes`
 
@@ -554,7 +554,7 @@ The path to the source JSX node, represented as an array of strings and numbers.
 
 ##### `sourceFrame`
 
-The split frame in that source node's timing. It may differ from the absolute composition `frame` passed to `split_sequences`, for example inside a nested sequence or a composition with a different playback rate.
+The split frame in that source node's timing. It may differ from the composition playhead, for example inside a nested sequence or a composition with a different playback rate.
 
 #### `sequences[].effects`<AvailableFrom v="4.0.540" />
 
@@ -595,201 +595,6 @@ The path to the JSX node within that source file, represented as an array of str
 ##### `effectIndices`
 
 The zero-based effect indices in the chain before the deletion started. These indices do not refer to the remaining effects after the preview refreshes.
-
-### `move_sequences`<AvailableFrom v="4.0.540" />
-
-Moves specified sequences together using the timeline's timing action. The playhead and selection stay unchanged. The preview updates immediately, and a failed save restores the affected fields without undoing newer edits.
-
-Requires an open composition and editable source in a connected interactive Studio or an initialized Browser Studio. Unavailable in detached and read-only deployed Studios, and while Browser Studio is still connecting.
-
-```ts title="Input"
-{
-  sequenceIds: string[];
-  deltaFrames: number;
-}
-```
-
-#### `sequenceIds`
-
-Required. A non-empty array of unique IDs from `get_sequences`. All targets and affected animation sources are checked before editing. An unknown ID, unavailable source, unsupported timing, or programmatically repeated source node makes the entire batch ineligible; no clips are moved.
-
-Selecting a parent and its descendant moves the parent once. Affected sequence and effect animations follow the same timing rules as a timeline drag.
-
-#### `deltaFrames`
-
-Required. An integer offset in composition frames. Negative values move earlier. Studio converts the offset to each source clock and applies the timeline's parent, neighboring-clip and composition limits. The result reports the applied offset if the request was clamped.
-
-```ts title="Output"
-{
-  sequenceIds: string[];
-  deltaFrames: number;
-  status: 'success' | 'no-op' | 'ineligible' | 'error';
-  reason: string | null;
-  changes: Array<{
-    absolutePath: string;
-    nodePath: Array<string | number>;
-    fieldKey: string;
-    value: unknown;
-  }>;
-  clamped: boolean;
-  appliedDeltaFrames: number | null;
-  appliedFrame: number | null;
-}
-```
-
-#### `status`
-
-`success` means the timing edit was saved to source; the preview may still be refreshing. `no-op` means no source change was needed, including a move constrained to the current position. `ineligible` means the targets cannot be edited together. `error` means the save failed.
-
-Malformed inputs, a missing composition, or unavailable source editing reject the tool call before an edit starts.
-
-#### `reason`
-
-The explanation for an ineligible or failed edit, otherwise `null`.
-
-#### `changes`
-
-The timing-property changes made by the action. Related sequence and effect keyframe moves can also be saved. Empty for an ineligible or failed edit, or when no source change was needed. Read `get_sequences` again for the resulting timeline timing.
-
-##### `absolutePath`
-
-The edited source file's absolute path.
-
-##### `nodePath`
-
-The path to the edited source JSX node.
-
-##### `fieldKey`
-
-The source property being changed, such as `from` or `durationInFrames`.
-
-##### `value`
-
-The value written to that property, in its source clock. It can differ from the composition-frame input.
-
-#### `clamped`
-
-Whether timing limits changed the requested move.
-
-#### `appliedDeltaFrames`
-
-The applied offset in composition frames, or `null` for an ineligible or failed edit.
-
-#### `appliedFrame`
-
-Always `null` for a move. This field is used by `trim_sequence`.
-
-### `trim_sequence`<AvailableFrom v="4.0.540" />
-
-Trims one sequence's start or end using the timeline's timing action. It preserves the playhead and selection and uses the same optimistic updates, failure recovery and mode restrictions as `move_sequences`.
-
-```ts title="Input"
-{
-  sequenceId: string;
-  edge: 'start' | 'end';
-  frame: number;
-}
-```
-
-#### `sequenceId`
-
-Required. An ID from `get_sequences`. Missing or stale source metadata, programmatically repeated source nodes and unsupported timing are ineligible; no edit starts.
-
-#### `edge`
-
-Required. `start` changes the in-point while preserving the right edge and adjusting the source start where needed to preserve the media's position. `end` changes the out-point. This tool does not perform a source-only slip, ripple or rolling edit; clips requiring those operations are ineligible.
-
-#### `frame`
-
-Required. The requested absolute composition boundary as an integer from `0` through the composition's `durationInFrames`. The end boundary is exclusive: a clip starting at frame `120` with duration `60` ends at boundary `180`, while `get_sequences.endFrame` is `179`.
-
-The timeline's media, keyframe, parent and neighboring-clip limits apply. A boundary outside the composition is ineligible. A boundary within the composition but beyond a clip's limits is clamped.
-
-```ts title="Output"
-{
-  sequenceId: string;
-  edge: 'start' | 'end';
-  frame: number;
-  status: 'success' | 'no-op' | 'ineligible' | 'error';
-  reason: string | null;
-  changes: Array<{
-    absolutePath: string;
-    nodePath: Array<string | number>;
-    fieldKey: string;
-    value: unknown;
-  }>;
-  clamped: boolean;
-  appliedDeltaFrames: number | null;
-  appliedFrame: number | null;
-}
-```
-
-#### `appliedFrame`
-
-The resulting absolute composition boundary, or `null` for an ineligible or failed edit. `frame` echoes the requested boundary.
-
-#### `appliedDeltaFrames`
-
-The applied movement of the edge in composition frames, or `null` for an ineligible or failed edit. The remaining result fields have the same meanings as for `move_sequences`; `clamped` reports whether the requested boundary was constrained.
-
-### `split_sequences`<AvailableFrom v="4.0.540" />
-
-Splits specified clips at an absolute composition frame using the same batch action as Studio. The tool does not move the playhead or change the selection. It requires an open composition and source editing in a connected interactive Studio or Browser Studio; unavailable in detached or read-only deployed Studios.
-
-```ts title="Input"
-{
-  sequenceIds: string[];
-  frame: number;
-}
-```
-
-#### `sequenceIds`
-
-Required. A non-empty array of unique sequence IDs from `get_sequences`. All IDs and their editable source locations are resolved before editing. An unknown ID or unavailable source rejects the entire tool call without splitting any clips.
-
-#### `frame`
-
-Required. An integer from `0` through the composition's `durationInFrames - 1`. This is an absolute composition frame, not a clip-local or media frame. Studio converts it to each clip's source timing.
-
-A clip can split only strictly between its start and end. The same restrictions as the UI apply: Track containers, Series clips, looping clips, programmatically repeated source nodes and clips without editable static timing are not eligible. In a mixed batch, eligible clips are split and the remaining clips are reported in `skipped`.
-
-```ts title="Output"
-{
-  frame: number;
-  status: 'success' | 'already-pending' | 'ineligible' | 'error';
-  reason: string | null;
-  splitSequenceIds: string[];
-  skipped: Array<{sequenceId: string; reason: string}>;
-}
-```
-
-#### `status`
-
-`success` means the eligible splits were saved to source. The preview may still be refreshing. Read `get_sequences` again after refresh to obtain the resulting sequence IDs.
-
-`already-pending` means an eligible source target already has a split in progress; no new split request is started for the batch. `ineligible` means none of the requested clips can be split at this frame. `error` means the split failed or its preview could not be confirmed. In the latter case, `reason` states that the split was saved and explains what to do before splitting again.
-
-Malformed inputs, out-of-range composition frames, unavailable source editing and missing IDs reject the tool call before the action starts.
-
-#### `reason`
-
-A reason for an unsuccessful action, otherwise `null`. Per-clip eligibility reasons are returned in `skipped`.
-
-#### `splitSequenceIds`
-
-The original requested sequence IDs whose source was split. Empty unless `status` is `success`. These identify the clips before the edit, even if the preview refreshes before the tool returns.
-
-#### `skipped`
-
-Clips that the shared action could not split at the requested frame.
-
-##### `sequenceId`
-
-The original requested sequence ID. If several requested IDs share a repeated source node, each ID is reported as skipped.
-
-##### `reason`
-
-Why this clip was ineligible.
 
 ### `delete_effect`<AvailableFrom v="4.0.540" />
 
@@ -987,7 +792,7 @@ Returns the measurable selectable component outlines active at the current frame
 
 ### `get_playback_state`
 
-Returns the current playhead, playback, audio, looping and timeline zoom state. Timeline zoom is normalized between `0` (fully zoomed out) and `1` (maximum zoom). Playback fields are `null` when the canvas shows other content or an asset preview is not ready. Audio and video asset previews are supported from <AvailableFrom v="4.0.540" inline />.
+Returns the current playhead, playback, audio, looping and timeline zoom state. Timeline zoom is normalized between `0` (fully zoomed out) and `1` (maximum zoom). Playback fields are `null` for unsupported or unready content. Audio/video assets and rendered outputs are supported from <AvailableFrom v="4.0.540" inline />.
 
 ```ts title="Input"
 {
@@ -998,6 +803,8 @@ Returns the current playhead, playback, audio, looping and timeline zoom state. 
 {
   currentContent: CurrentContent | null;
   currentFrame: number | null;
+  fps: number | null;
+  durationInFrames: number | null;
   playing: boolean | null;
   muted: boolean | null;
   volume: number | null;
@@ -1006,6 +813,22 @@ Returns the current playhead, playback, audio, looping and timeline zoom state. 
   timelineZoom: number | null;
 }
 ```
+
+#### `fps`<AvailableFrom v="4.0.540" />
+
+The preview's frame rate, used to interpret `currentFrame` and `seek_to_frame`. Rendered video uses its own media metadata, independently of the previously selected composition. Audio outputs and rendered video without a known frame rate use a 30 fps preview clock. `null` when no supported preview is ready.
+
+#### `durationInFrames`<AvailableFrom v="4.0.540" />
+
+The current preview's duration in its frame clock, or `null` when unavailable. Rendered outputs derive it from their native media duration and preview frame rate.
+
+#### `timelineZoom`
+
+`null` for rendered outputs because their native media preview has no Studio timeline.
+
+#### `currentContent`
+
+Identifies the open canvas content. Server outputs report their path; local browser outputs report their display name, dimensions and size. Blob data and blob retrieval functions are not exposed.
 
 ### `get_selection`
 
@@ -1137,7 +960,7 @@ Removes a guide using an ID returned by `get_guides` or `add_guide`.
 
 ### `play`
 
-Starts playback from the current frame. Still compositions and asset previews with only one frame cannot be played.
+Starts playback from the current frame. Composition and asset previews with only one frame cannot be played. A rendered output can play whenever its native media has a positive duration, including one-frame outputs. The tool waits for native playback to start and reports playback errors or navigation away from that output.
 
 ```ts title="Input"
 {
@@ -1146,10 +969,8 @@ Starts playback from the current frame. Still compositions and asset previews wi
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
-  playing: true;
+  currentContent: CurrentContent;
+  playing: boolean;
 }
 ```
 
@@ -1164,9 +985,7 @@ Pauses playback at the current frame.
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   playing: false;
 }
 ```
@@ -1182,9 +1001,7 @@ Mutes audio playback.
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   muted: true;
 }
 ```
@@ -1200,16 +1017,37 @@ Unmutes audio playback.
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   muted: false;
+}
+```
+
+### `set_volume`<AvailableFrom v="4.0.540" />
+
+Sets playback volume for the current composition or ready audio/video asset or rendered output. Available locally in all four Studio modes. This changes preview volume, not the composition's audio source properties, and does not change the muted state.
+
+Composition and asset previews share Studio's volume. A rendered output keeps its own volume while mounted.
+
+```ts title="Input"
+{
+  volume: number;
+}
+```
+
+#### `volume`
+
+Required. A finite number from `0` (silent) through `1` (full volume). Invalid values and unsupported or unready previews return an error before changing volume.
+
+```ts title="Output"
+{
+  currentContent: CurrentContent;
+  volume: number;
 }
 ```
 
 ### `set_timeline_zoom`
 
-Sets the timeline zoom using a normalized value between `0` (fully zoomed out) and `1` (maximum zoom). The output contains the effective normalized zoom after Studio applies its supported zoom step. Still compositions and asset previews with only one frame do not have timeline zoom.
+Sets the timeline zoom using a normalized value between `0` (fully zoomed out) and `1` (maximum zoom). The output contains the effective normalized zoom after Studio applies its supported zoom step. Still compositions and asset previews with only one frame do not have timeline zoom. Rendered-output previews reject this tool because they have no Studio timeline.
 
 ```ts title="Input"
 {
@@ -1230,7 +1068,7 @@ Sets the timeline zoom using a normalized value between `0` (fully zoomed out) a
 
 ### `set_looping`<AvailableFrom v="4.0.540" />
 
-Enables or disables looping for the current composition or ready audio/video asset preview. Updates the Loop control immediately and saves the preference for subsequent previews. Returns an error if no supported preview is ready or it has only one frame.
+Enables or disables looping for the current composition or ready audio/video preview. For compositions and assets, it updates the Loop control immediately and saves the preference for subsequent previews. For rendered outputs with a positive duration, it changes only the mounted native media element. Returns an error if no supported preview is ready or a composition or asset preview has only one frame.
 
 ```ts title="Input"
 {
@@ -1242,16 +1080,14 @@ Enables or disables looping for the current composition or ready audio/video ass
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   looping: boolean;
 }
 ```
 
 ### `set_playback_rate`
 
-Sets the playback multiplier. Negative values play backwards.
+Sets the playback multiplier. Negative values play backwards in compositions and asset previews. Rendered outputs accept only positive rates and retain their own playback rate; a negative rate returns an error without changing playback preferences.
 
 ```ts title="Input"
 {
@@ -1272,16 +1108,14 @@ Sets the playback multiplier. Negative values play backwards.
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   playbackRate: number;
 }
 ```
 
 ### `seek_to_frame`
 
-Seeks to a zero-based frame. Values beyond the duration are clamped to the final frame.
+Seeks to a zero-based frame. Values beyond the duration are clamped to the final frame. Read `fps` and `durationInFrames` from `get_playback_state` to interpret rendered-output frames; a seek updates the same native media element used by the preview controls.
 
 ```ts title="Input"
 {
@@ -1293,9 +1127,7 @@ Seeks to a zero-based frame. Values beyond the duration are clamped to the final
 
 ```ts title="Output"
 {
-  currentContent:
-    | {type: 'composition'; compositionId: string}
-    | {type: 'asset'; asset: string};
+  currentContent: CurrentContent;
   currentFrame: number;
 }
 ```

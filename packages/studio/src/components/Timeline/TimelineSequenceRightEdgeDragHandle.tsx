@@ -566,7 +566,7 @@ export const getTimelineSequenceLeftEdgeDragValues = ({
 	};
 };
 
-export const getTimelineSequenceLeftEdgeDragValuesForTarget = ({
+const getTimelineSequenceLeftEdgeDragValuesForTarget = ({
 	target,
 	deltaFrames,
 	trimBeforeOnly,
@@ -1824,61 +1824,6 @@ export const getTimelineSequenceRollingEditTargets = ({
 			}),
 		},
 	];
-};
-
-export const getTimelineSequenceFromDragOverrides = ({
-	targets,
-	deltaFrames,
-}: {
-	targets: readonly TimelineSequenceFromDragTarget[];
-	deltaFrames: number;
-}) => {
-	const updates: DragOverrideUpdate[] = [];
-	const effectUpdates: EffectDragOverrideUpdate[] = [];
-
-	for (const target of targets) {
-		const nextFrom = getTimelineSequenceFromDragValue({
-			initialFrom: target.initialFrom,
-			deltaFrames: deltaFrames * target.parentPlaybackRate,
-		});
-		updates.push({
-			nodePath: target.nodePath,
-			key: 'from',
-			value: Internals.makeStaticDragOverride(nextFrom),
-		});
-		for (const keyframeTarget of target.sequenceKeyframes) {
-			updates.push({
-				nodePath: keyframeTarget.nodePath,
-				key: keyframeTarget.fieldKey,
-				value: {
-					type: 'keyframed',
-					status: shiftKeyframedStatus({
-						status: keyframeTarget.status,
-						deltaFrames: deltaFrames * keyframeTarget.parentPlaybackRate,
-						isDescendant: keyframeTarget.isDescendant,
-					}),
-				},
-			});
-		}
-
-		for (const keyframeTarget of target.effectKeyframes) {
-			effectUpdates.push({
-				nodePath: keyframeTarget.nodePath,
-				effectIndex: keyframeTarget.effectIndex,
-				key: keyframeTarget.fieldKey,
-				value: {
-					type: 'keyframed',
-					status: shiftKeyframedStatus({
-						status: keyframeTarget.status,
-						deltaFrames: deltaFrames * keyframeTarget.parentPlaybackRate,
-						isDescendant: keyframeTarget.isDescendant,
-					}),
-				},
-			});
-		}
-	}
-
-	return {updates, effectUpdates};
 };
 
 export const getTimelineSequenceFromDragTargets = ({
@@ -3199,11 +3144,53 @@ export const useTimelineSequenceFromDrag = ({
 							);
 						}
 
-						const {updates, effectUpdates} =
-							getTimelineSequenceFromDragOverrides({
-								targets: dragState.targets,
-								deltaFrames,
+						const updates: DragOverrideUpdate[] = [];
+						const effectUpdates: EffectDragOverrideUpdate[] = [];
+
+						for (const target of dragState.targets) {
+							const nextFrom = getTimelineSequenceFromDragValue({
+								initialFrom: target.initialFrom,
+								deltaFrames: deltaFrames * target.parentPlaybackRate,
 							});
+							updates.push({
+								nodePath: target.nodePath,
+								key: 'from',
+								value: Internals.makeStaticDragOverride(nextFrom),
+							});
+							for (const keyframeTarget of target.sequenceKeyframes) {
+								updates.push({
+									nodePath: keyframeTarget.nodePath,
+									key: keyframeTarget.fieldKey,
+									value: {
+										type: 'keyframed',
+										status: shiftKeyframedStatus({
+											status: keyframeTarget.status,
+											deltaFrames:
+												deltaFrames * keyframeTarget.parentPlaybackRate,
+											isDescendant: keyframeTarget.isDescendant,
+										}),
+									},
+								});
+							}
+
+							for (const keyframeTarget of target.effectKeyframes) {
+								effectUpdates.push({
+									nodePath: keyframeTarget.nodePath,
+									effectIndex: keyframeTarget.effectIndex,
+									key: keyframeTarget.fieldKey,
+									value: {
+										type: 'keyframed',
+										status: shiftKeyframedStatus({
+											status: keyframeTarget.status,
+											deltaFrames:
+												deltaFrames * keyframeTarget.parentPlaybackRate,
+											isDescendant: keyframeTarget.isDescendant,
+										}),
+									},
+								});
+							}
+						}
+
 						dragState.preview.setDragOverridesBatch(
 							updates,
 							latestRef.current.updateDragOverridesBatch,
