@@ -5,6 +5,10 @@ import type {
 	SequenceNodePathMutation,
 } from '@remotion/studio-shared';
 import {Internals} from 'remotion';
+import {
+	clearPendingSequenceSplits,
+	supersedePendingSequenceSplits,
+} from '../components/Timeline/pending-sequence-splits';
 import {invalidateDuplicatedElementSelection} from './duplicated-element-selection';
 import {guardPendingEffectDeletion} from './guard-pending-effect-deletion';
 import {installRequiredPackages} from './install-required-package';
@@ -35,6 +39,7 @@ export const enqueueStudioSourceMutation = <T>(
 
 	if (endpoint === '/api/undo' || endpoint === '/api/redo') {
 		invalidateDuplicatedElementSelection();
+		clearPendingSequenceSplits();
 		Internals.OptimisticEffectDeletion.clear();
 	}
 
@@ -169,6 +174,23 @@ export const enqueueStudioSourceMutation = <T>(
 			} catch (error) {
 				rebaseError = error;
 				return;
+			}
+
+			if (endpoint === '/api/save-sequence-props') {
+				supersedePendingSequenceSplits(
+					(body as SaveSequencePropsRequest).edits
+						.filter((edit) =>
+							[
+								'from',
+								'durationInFrames',
+								'trimBefore',
+								'playbackRate',
+							].includes(edit.key),
+						)
+						.map((edit) => edit.nodePath),
+				);
+			} else if (nodes.length > 0) {
+				supersedePendingSequenceSplits(nodes);
 			}
 
 			if (nodes.length > 0) {

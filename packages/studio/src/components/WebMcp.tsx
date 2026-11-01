@@ -31,7 +31,10 @@ import {
 	normalizedToTimelineZoom,
 	timelineZoomToNormalized,
 } from '../helpers/get-timeline-max-zoom';
-import type {TimelineTrackData} from '../helpers/get-timeline-sequence-sort-key';
+import type {
+	SequenceNodePathInfo,
+	TimelineTrackData,
+} from '../helpers/get-timeline-sequence-sort-key';
 import {isStudioInteractivityEnabled} from '../helpers/interactivity-enabled';
 import {
 	EditorShowGuidesContext,
@@ -71,7 +74,15 @@ import {
 } from './Timeline/duplicate-selected-timeline-item';
 import {getCurrentDuration, getCurrentFrame} from './Timeline/imperative-state';
 import {parseKeyframeFieldFromNodePath} from './Timeline/parse-keyframe-field-from-node-path';
+import {
+	getPendingSequenceSplits,
+	isSequenceSplitPending,
+} from './Timeline/pending-sequence-splits';
 import {shouldShowTrackInTimeline} from './Timeline/should-show-track-in-timeline';
+import {
+	canSplitTimelineSequences,
+	splitSelectedTimelineItemsWithResult,
+} from './Timeline/split-selected-timeline-item';
 import {scrollableRef} from './Timeline/timeline-refs';
 import {
 	getTimelineSelectionFromNodePathInfo,
@@ -1050,7 +1061,7 @@ export const WebMcp: FC = () => {
 					name: 'get_sequences',
 					title: 'Get Studio sequences',
 					description:
-						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, effects, source stack, selection availability, and pending duplication or effect deletion. Pending operations include source nodes that are temporarily unmounted during refresh.',
+						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, effects, source stack, selection availability, and pending duplication, splitting, or effect deletion. Pending operations include source nodes that are temporarily unmounted during refresh.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1075,6 +1086,13 @@ export const WebMcp: FC = () => {
 						return Promise.resolve({
 							currentContent: currentContentRef.current,
 							pendingDuplications: getPendingSequenceDuplications(),
+							pendingSplits: getPendingSequenceSplits().map(
+								({absolutePath, nodePath, splitFrame}) => ({
+									absolutePath,
+									nodePath,
+									sourceFrame: splitFrame,
+								}),
+							),
 							pendingEffectDeletions: pendingEffectDeletions.map(
 								({nodePath, effectIndices}) => ({
 									absolutePath: nodePath.absolutePath,
@@ -1098,6 +1116,9 @@ export const WebMcp: FC = () => {
 												: undefined;
 											return {
 												...serializeSequence(track),
+												splitting:
+													track.nodePathInfo !== null &&
+													isSequenceSplitPending(track.nodePathInfo),
 												duplicating:
 													track.nodePathInfo !== null &&
 													isSequenceDuplicationPending(track.nodePathInfo),
@@ -1133,6 +1154,139 @@ export const WebMcp: FC = () => {
 											};
 										}),
 						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'split_sequences',
+					title: 'Split Studio sequences',
+					description:
+						'Split the specified mounted sequences at an absolute composition frame using the same batch action as Studio. Does not move the playhead or change selection. Resolves every sequence ID before editing, splits eligible clips, and reports skipped clips with reasons. Available in connected interactive Studio and Browser Studio. Success means the source was saved; the preview may still be refreshing.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							sequenceIds: {
+								type: 'array',
+								items: {type: 'string', minLength: 1},
+								minItems: 1,
+								uniqueItems: true,
+								description: 'Unique sequence IDs returned by get_sequences.',
+							},
+							frame: {
+								type: 'integer',
+								minimum: 0,
+								description:
+									'The absolute composition frame, from 0 through durationInFrames - 1.',
+							},
+						},
+						required: ['sequenceIds', 'frame'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({sequenceIds, frame}) => {
+						if (
+							!Array.isArray(sequenceIds) ||
+							sequenceIds.length === 0 ||
+							sequenceIds.some(
+								(id) => typeof id !== 'string' || id.length === 0,
+							)
+						) {
+							throw new Error(
+								'sequenceIds must be a non-empty array of non-empty strings.',
+							);
+						}
+
+						if (new Set(sequenceIds).size !== sequenceIds.length) {
+							throw new Error('sequenceIds must not contain duplicates.');
+						}
+
+						if (
+							typeof frame !== 'number' ||
+							!Number.isInteger(frame) ||
+							frame < 0
+						) {
+							throw new Error('frame must be a non-negative integer.');
+						}
+
+						if (currentCompositionRef.current === null) {
+							throw new Error('No composition is currently selected.');
+						}
+
+						if (
+							!timelineSelectionRef.current.canSelect ||
+							!canSplitTimelineSequences()
+						) {
+							throw new Error('Studio source editing is unavailable.');
+						}
+
+						if (frame >= getCurrentDuration()) {
+							throw new Error(
+								'frame must be less than the composition duration.',
+							);
+						}
+
+						const tracks = getCurrentTimeline();
+						const tracksById = new Map(
+							tracks.map((track) => [track.sequence.id, track]),
+						);
+						const sequenceIdsByNode = new Map<string, string[]>();
+						const getSourceKey = (info: SequenceNodePathInfo) =>
+							JSON.stringify([
+								info.sequenceSubscriptionKey.absolutePath,
+								info.sequenceSubscriptionKey.nodePath,
+							]);
+						const selections = sequenceIds.map((sequenceId) => {
+							const track = tracksById.get(sequenceId);
+							if (!track)
+								throw new Error(
+									`Sequence ${sequenceId} not found in the current composition.`,
+								);
+							if (track.nodePathInfo === null)
+								throw new Error(
+									`The source for sequence ${sequenceId} is unavailable.`,
+								);
+							const key = getSourceKey(track.nodePathInfo);
+							const idsForSource = sequenceIdsByNode.get(key);
+							if (idsForSource) {
+								idsForSource.push(sequenceId);
+							} else {
+								sequenceIdsByNode.set(key, [sequenceId]);
+							}
+
+							return {
+								type: 'sequence' as const,
+								nodePathInfo: track.nodePathInfo,
+							};
+						});
+						const result = await splitSelectedTimelineItemsWithResult({
+							selections,
+							tracks,
+							propStatuses: propStatusesRef.current,
+							splitFrame: frame,
+						});
+						return {
+							frame,
+							status: result.status,
+							reason: result.reason,
+							splitSequenceIds: [
+								...new Set(result.split.map(getSourceKey)),
+							].flatMap((key) => sequenceIdsByNode.get(key) ?? []),
+							skipped: [
+								...new Map(
+									result.skipped.map(({nodePathInfo, reason}) => [
+										getSourceKey(nodePathInfo),
+										reason,
+									]),
+								),
+							].flatMap(([key, reason]) =>
+								(sequenceIdsByNode.get(key) ?? []).map((sequenceId) => ({
+									sequenceId,
+									reason,
+								})),
+							),
+						};
 					},
 				},
 				{signal: controller.signal},

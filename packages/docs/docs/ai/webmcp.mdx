@@ -15,7 +15,7 @@ Agents can:
 
 - See which items you currently have selected
 - See selectable items and select them
-- Duplicate sequences and inspect duplication progress
+- Duplicate or split sequences and inspect pending edits
 - See available compositions and navigate to them
 - Inspect render jobs, cancel queued or running renders, and reopen saved render settings
 - Read the error currently shown in the Studio error overlay
@@ -450,6 +450,11 @@ Returns the timeline sequences mounted for the current composition, including th
     absolutePath: string;
     nodePath: Array<string | number>;
   }>;
+  pendingSplits: Array<{
+    absolutePath: string;
+    nodePath: Array<string | number>;
+    sourceFrame: number;
+  }>;
   pendingEffectDeletions: Array<{
     absolutePath: string;
     nodePath: Array<string | number>;
@@ -467,6 +472,7 @@ Returns the timeline sequences mounted for the current composition, including th
     stack: string | null;
     selectable: boolean;
     duplicating: boolean;
+    splitting: boolean;
     effects: Array<{
       effectIndex: number;
       type: string;
@@ -493,6 +499,30 @@ The absolute path of the source file.
 ##### `nodePath`
 
 The path to the JSX node within that source file, represented as an array of strings and numbers.
+
+#### `sequences[].splitting`<AvailableFrom v="4.0.540" />
+
+Whether a split of this sequence's source node is being applied. The flag follows source-path remapping while the operation is pending.
+
+#### `pendingSplits`<AvailableFrom v="4.0.540" />
+
+Pending source splits in this Studio tab, including sources temporarily unmounted during refresh. Source locations follow edits that move their JSX nodes.
+
+For the active composition, a split stays pending until its save is acknowledged and the shortened original clip and new right half appear in the preview. This works whether the save response or preview refresh arrives first. A failed split clears its pending state. Undo, reconnecting Studio, or a newer timing edit affecting the clip, including a confirmed newer edit made directly in code, can supersede it.
+
+If you navigate away from the composition, a saved split can stop being pending before its preview is shown again. An empty array does not guarantee that an offscreen composition has finished refreshing.
+
+##### `absolutePath`
+
+The source file's absolute path.
+
+##### `nodePath`
+
+The path to the source JSX node, represented as an array of strings and numbers.
+
+##### `sourceFrame`
+
+The split frame in that source node's timing. It may differ from the absolute composition `frame` passed to `split_sequences`, for example inside a nested sequence or a composition with a different playback rate.
 
 #### `sequences[].effects`<AvailableFrom v="4.0.540" />
 
@@ -533,6 +563,65 @@ The path to the JSX node within that source file, represented as an array of str
 ##### `effectIndices`
 
 The zero-based effect indices in the chain before the deletion started. These indices do not refer to the remaining effects after the preview refreshes.
+
+### `split_sequences`<AvailableFrom v="4.0.540" />
+
+Splits specified clips at an absolute composition frame using the same batch action as Studio. The tool does not move the playhead or change the selection. It requires an open composition and source editing in a connected interactive Studio or Browser Studio; unavailable in detached or read-only deployed Studios.
+
+```ts title="Input"
+{
+  sequenceIds: string[];
+  frame: number;
+}
+```
+
+#### `sequenceIds`
+
+Required. A non-empty array of unique sequence IDs from `get_sequences`. All IDs and their editable source locations are resolved before editing. An unknown ID or unavailable source rejects the entire tool call without splitting any clips.
+
+#### `frame`
+
+Required. An integer from `0` through the composition's `durationInFrames - 1`. This is an absolute composition frame, not a clip-local or media frame. Studio converts it to each clip's source timing.
+
+A clip can split only strictly between its start and end. The same restrictions as the UI apply: Track containers, Series clips, looping clips, programmatically repeated source nodes and clips without editable static timing are not eligible. In a mixed batch, eligible clips are split and the remaining clips are reported in `skipped`.
+
+```ts title="Output"
+{
+  frame: number;
+  status: 'success' | 'already-pending' | 'ineligible' | 'error';
+  reason: string | null;
+  splitSequenceIds: string[];
+  skipped: Array<{sequenceId: string; reason: string}>;
+}
+```
+
+#### `status`
+
+`success` means the eligible splits were saved to source. The preview may still be refreshing. Read `get_sequences` again after refresh to obtain the resulting sequence IDs.
+
+`already-pending` means an eligible source target already has a split in progress; no new split request is started for the batch. `ineligible` means none of the requested clips can be split at this frame. `error` means the split failed or its preview could not be confirmed. In the latter case, `reason` states that the split was saved and explains what to do before splitting again.
+
+Malformed inputs, out-of-range composition frames, unavailable source editing and missing IDs reject the tool call before the action starts.
+
+#### `reason`
+
+A reason for an unsuccessful action, otherwise `null`. Per-clip eligibility reasons are returned in `skipped`.
+
+#### `splitSequenceIds`
+
+The original requested sequence IDs whose source was split. Empty unless `status` is `success`. These identify the clips before the edit, even if the preview refreshes before the tool returns.
+
+#### `skipped`
+
+Clips that the shared action could not split at the requested frame.
+
+##### `sequenceId`
+
+The original requested sequence ID. If several requested IDs share a repeated source node, each ID is reported as skipped.
+
+##### `reason`
+
+Why this clip was ineligible.
 
 ### `delete_effect`<AvailableFrom v="4.0.540" />
 

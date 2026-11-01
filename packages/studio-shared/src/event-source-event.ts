@@ -88,6 +88,7 @@ export type EventSourceEvent =
 			fileName: string;
 			line: number;
 			column: number;
+			sourceVersion: SourceFileVersion | null;
 	  }
 	| {
 			type: 'default-props-updatable-changed';

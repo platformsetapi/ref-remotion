@@ -2,6 +2,7 @@ import type {SourceFileVersion} from '@remotion/studio-shared';
 import type {ContextType} from 'react';
 import type {SequencePropsSubscriptionKey} from 'remotion';
 import {Internals} from 'remotion';
+import {clearPendingSequenceSplits} from '../components/Timeline/pending-sequence-splits';
 
 type Setters = ContextType<typeof Internals.VisualModeSettersContext>;
 const versions = new WeakMap<
@@ -16,7 +17,11 @@ let sourceSessionId: string | null = null;
 
 export const getSequencePropsSourceSession = () => sourceSessionId;
 export const setSequencePropsSourceSession = (sessionId: string | null) => {
-	if (sourceSessionId !== sessionId) Internals.OptimisticEffectDeletion.clear();
+	if (sourceSessionId !== sessionId) {
+		Internals.OptimisticEffectDeletion.clear();
+		clearPendingSequenceSplits();
+	}
+
 	sourceSessionId = sessionId;
 };
 

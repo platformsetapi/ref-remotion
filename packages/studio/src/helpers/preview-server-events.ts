@@ -2,12 +2,16 @@
 /// <reference lib="dom.iterable" />
 
 import type {EventSourceEvent} from '@remotion/studio-shared';
+import {observePendingSequenceSplitSourceVersion} from '../components/Timeline/pending-sequence-splits';
 import {
 	BROWSER_STUDIO_OPERATIONS_READY_EVENT,
 	getBrowserStudioOperations,
 } from './browser-studio-operations';
 import {queueSequenceNodePathMutation} from './sequence-node-path-mutations';
-import {setSequencePropsSourceSession} from './sequence-props-source-version';
+import {
+	getSequencePropsSourceSession,
+	setSequencePropsSourceSession,
+} from './sequence-props-source-version';
 
 export type PreviewServerConnectionState =
 	| {
@@ -42,6 +46,17 @@ const notifyConnectionState = () => {
 const dispatch = (event: EventSourceEvent) => {
 	if (event.type === 'sequence-node-paths-remapped') {
 		queueSequenceNodePathMutation(event.mutation);
+	}
+
+	if (
+		(event.type === 'sequence-props-updated' ||
+			event.type === 'lost-node-path') &&
+		event.sourceVersion?.sessionId === getSequencePropsSourceSession()
+	) {
+		observePendingSequenceSplitSourceVersion(
+			event.fileName,
+			event.sourceVersion,
+		);
 	}
 
 	if (event.type === 'init') {
@@ -168,6 +183,8 @@ export const subscribeToPreviewServerEvents = (
 		messageListeners.delete(listener);
 	};
 };
+
+export const getPreviewServerConnectionState = () => connectionState;
 
 export const subscribeToPreviewServerConnectionState = (
 	listener: ConnectionStateListener,

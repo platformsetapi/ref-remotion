@@ -326,6 +326,7 @@ export const subscribeToSequencePropsWatchers = ({
 							fileName,
 							line,
 							column,
+							sourceVersion: event.sourceVersion,
 						});
 					});
 					return;
