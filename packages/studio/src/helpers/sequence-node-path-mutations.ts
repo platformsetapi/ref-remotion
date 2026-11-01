@@ -6,6 +6,18 @@ import {getLastDispatchedSourceMutationRevision} from './source-mutation-queue';
 const pendingMutations: SequenceNodePathMutation[] = [];
 const pendingDeletionRetirements: Array<() => void> = [];
 const seenMutationIds = new Set<string>();
+const mutationListeners = new Set<
+	(mutation: SequenceNodePathMutation) => void
+>();
+
+export const subscribeToSequenceNodePathMutations = (
+	listener: (mutation: SequenceNodePathMutation) => void,
+) => {
+	mutationListeners.add(listener);
+	return () => {
+		mutationListeners.delete(listener);
+	};
+};
 
 export const queueSequenceNodePathMutation = (
 	mutation: SequenceNodePathMutation,
@@ -43,6 +55,10 @@ export const queueSequenceNodePathMutation = (
 			},
 			notification: null,
 		});
+	}
+
+	for (const listener of mutationListeners) {
+		listener(mutation);
 	}
 };
 

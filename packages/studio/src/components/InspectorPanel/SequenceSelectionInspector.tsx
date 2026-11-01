@@ -21,7 +21,10 @@ import {VERTICAL_SCROLLBAR_CLASSNAME} from '../Menu/is-menu-item';
 import {showNotification} from '../Notifications/NotificationCenter';
 import {getMediaFileName} from '../public-output-name';
 import {splitVideoFromAudio} from '../split-video-from-audio-api';
-import {duplicateSequencesFromSource} from '../Timeline/duplicate-selected-timeline-item';
+import {
+	duplicateSequencesFromSource,
+	useIsDuplicatingSequence,
+} from '../Timeline/duplicate-selected-timeline-item';
 import {
 	getSequenceSourceSplitFrame,
 	getTimelineSequenceSplitEligibility,
@@ -158,7 +161,9 @@ const SequenceSourceQuickActions: React.FC<{
 	const sourceActionsDisabled =
 		previewServerState.type !== 'connected' || !isStudioInteractivityEnabled();
 	const isTransition = track.sequence.timelineTrack?.role === 'transition';
-	const duplicateDisabled = sourceActionsDisabled || isTransition;
+	const isDuplicating = useIsDuplicatingSequence(selection.nodePathInfo);
+	const duplicateDisabled =
+		sourceActionsDisabled || isTransition || isDuplicating;
 	const mediaSequence =
 		track.sequence.type === 'video' || track.sequence.type === 'audio'
 			? track.sequence
@@ -360,7 +365,7 @@ const SequenceSourceQuickActions: React.FC<{
 					/>
 				)}
 			>
-				Duplicate
+				{isDuplicating ? 'Duplicating...' : 'Duplicate'}
 			</InspectorQuickAction>
 			<SequenceWrapAction
 				nodePathInfo={selection.nodePathInfo}

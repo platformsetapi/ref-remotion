@@ -31,6 +31,7 @@ import {
 	timelineZoomToNormalized,
 } from '../helpers/get-timeline-max-zoom';
 import type {TimelineTrackData} from '../helpers/get-timeline-sequence-sort-key';
+import {isStudioInteractivityEnabled} from '../helpers/interactivity-enabled';
 import {
 	EditorShowGuidesContext,
 	persistGuidesList,
@@ -52,6 +53,11 @@ import {
 } from './public-output-name';
 import {RenderQueueContext} from './RenderQueue/context';
 import {measureOutlineTargets} from './selected-outline-measurement';
+import {
+	duplicateSequencesFromSource,
+	getPendingSequenceDuplications,
+	isSequenceDuplicationPending,
+} from './Timeline/duplicate-selected-timeline-item';
 import {getCurrentDuration, getCurrentFrame} from './Timeline/imperative-state';
 import {parseKeyframeFieldFromNodePath} from './Timeline/parse-keyframe-field-from-node-path';
 import {shouldShowTrackInTimeline} from './Timeline/should-show-track-in-timeline';
@@ -885,7 +891,7 @@ export const WebMcp: FC = () => {
 					name: 'get_sequences',
 					title: 'Get Studio sequences',
 					description:
-						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, type, source stack, and whether they can be selected.',
+						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, type, source stack, selection availability, and duplication progress. Pending duplications include source nodes that are temporarily unmounted during refresh.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -896,11 +902,91 @@ export const WebMcp: FC = () => {
 						const compositionId = currentCompositionRef.current;
 						return Promise.resolve({
 							currentContent: currentContentRef.current,
+							pendingDuplications: getPendingSequenceDuplications(),
 							sequences:
 								compositionId === null
 									? []
-									: getCurrentTimeline().map(serializeSequence),
+									: getCurrentTimeline().map((track) => ({
+											...serializeSequence(track),
+											duplicating:
+												track.nodePathInfo !== null &&
+												isSequenceDuplicationPending(track.nodePathInfo),
+										})),
 						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'duplicate_sequence',
+					title: 'Duplicate Studio sequence',
+					description:
+						'Duplicate the source JSX node for a mounted sequence using the same action as the Studio inspector. Requires source editing to be available. Success means the source copy was saved; new sequence IDs appear in get_sequences after the preview refreshes.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							sequenceId: {
+								type: 'string',
+								minLength: 1,
+								description: 'The sequence ID returned by get_sequences.',
+							},
+							confirmProgrammaticDuplication: {
+								type: 'boolean',
+								description:
+									'When one source node produces multiple runtime instances, copying that source node creates a copy for every instance. Set true to confirm this behavior; false cancels duplication of programmatically repeated nodes. Single-instance nodes do not require confirmation.',
+							},
+						},
+						required: ['sequenceId', 'confirmProgrammaticDuplication'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({sequenceId, confirmProgrammaticDuplication}) => {
+						if (typeof sequenceId !== 'string' || sequenceId.length === 0) {
+							throw new Error('sequenceId must be a non-empty string.');
+						}
+
+						if (typeof confirmProgrammaticDuplication !== 'boolean') {
+							throw new Error(
+								'confirmProgrammaticDuplication must be a boolean.',
+							);
+						}
+
+						if (currentCompositionRef.current === null) {
+							throw new Error('No composition is currently selected.');
+						}
+
+						if (
+							!timelineSelectionRef.current.canSelect ||
+							!isStudioInteractivityEnabled()
+						) {
+							throw new Error('Studio source editing is unavailable.');
+						}
+
+						const track = getCurrentTimeline().find(
+							(candidate) => candidate.sequence.id === sequenceId,
+						);
+						if (!track) {
+							throw new Error(
+								`Sequence ${sequenceId} not found in the current composition.`,
+							);
+						}
+
+						if (track.sequence.timelineTrack?.role === 'transition') {
+							throw new Error('Transitions cannot be duplicated.');
+						}
+
+						if (track.nodePathInfo === null) {
+							throw new Error(
+								`The source for sequence ${sequenceId} is unavailable.`,
+							);
+						}
+
+						const result = await duplicateSequencesFromSource(
+							[track.nodePathInfo],
+							() => Promise.resolve(confirmProgrammaticDuplication),
+						);
+						return {sequenceId, ...result};
 					},
 				},
 				{signal: controller.signal},
