@@ -2,6 +2,7 @@ import {
 	optimisticMoveEffectKeyframes,
 	optimisticMoveSequenceKeyframes,
 	type MoveKeyframesRequest,
+	type MoveKeyframesResponse,
 } from '@remotion/studio-shared';
 import type {
 	CanUpdateSequencePropSource,
@@ -200,9 +201,9 @@ export const callMoveKeyframes = ({
 		  ) => void)
 		| null;
 	clientId: string;
-}): Promise<void> => {
+}): Promise<MoveKeyframesResponse> => {
 	if (sequenceKeyframes.length === 0 && effectKeyframes.length === 0) {
-		return Promise.resolve();
+		return Promise.resolve({success: true, results: []});
 	}
 
 	const updates: {
@@ -238,5 +239,5 @@ export const callMoveKeyframes = ({
 			schema: keyframe.schema,
 		})),
 		clientId,
-	}).then(() => undefined);
+	});
 };

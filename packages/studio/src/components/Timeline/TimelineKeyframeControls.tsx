@@ -31,7 +31,7 @@ import {
 	type AddSequenceKeyframeChange,
 } from './call-add-keyframe';
 import {
-	callDeleteKeyframes,
+	useDeleteKeyframes,
 	type DeleteEffectKeyframeChange,
 	type DeleteSequenceKeyframeChange,
 } from './call-delete-keyframe';
@@ -488,6 +488,7 @@ export const TimelineKeyframeControls: React.FC<{
 	const timelinePosition = Internals.Timeline.useTimelinePosition();
 	const seekFrame = Internals.Timeline.useTimelineSeekFrame();
 	const {setPropStatuses} = useContext(Internals.VisualModeSettersContext);
+	const deleteKeyframes = useDeleteKeyframes({notifyOnError: true});
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -699,7 +700,7 @@ export const TimelineKeyframeControls: React.FC<{
 					{reveal: true},
 				);
 				const deleteChanges = deleteTargets.map(({change}) => change);
-				await callDeleteKeyframes({
+				await deleteKeyframes({
 					sequenceKeyframes: deleteChanges.filter(
 						(change): change is DeleteSequenceKeyframeChange =>
 							!hasEffectIndex(change),
@@ -708,9 +709,8 @@ export const TimelineKeyframeControls: React.FC<{
 						(change): change is DeleteEffectKeyframeChange =>
 							hasEffectIndex(change),
 					),
-					setPropStatuses,
 					clientId,
-				});
+				}).catch(() => undefined);
 				return;
 			}
 
@@ -756,6 +756,7 @@ export const TimelineKeyframeControls: React.FC<{
 			}
 		},
 		[
+			deleteKeyframes,
 			canAddKeyframe,
 			clientId,
 			defaultValue,

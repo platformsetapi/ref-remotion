@@ -9,6 +9,7 @@ import {
 } from '../../state/editor-guides';
 import {useConfirmationDialog} from '../ConfirmationDialog';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
+import {useDeleteKeyframes} from './call-delete-keyframe';
 import {
 	deleteSelectedTimelineItems,
 	getTimelineSelectionAfterDeletingItems,
@@ -35,6 +36,7 @@ export const useDeleteTimelineItems = () => {
 		Internals.VisualModePropStatusesRefContext,
 	);
 	const {setPropStatuses} = useContext(Internals.VisualModeSettersContext);
+	const deleteKeyframes = useDeleteKeyframes({notifyOnError: true});
 	const {setGuidesList} = useContext(EditorShowGuidesContext);
 	const currentSelection = useCurrentTimelineSelectionStateAsRef();
 	const confirm = useConfirmationDialog();
@@ -78,7 +80,7 @@ export const useDeleteTimelineItems = () => {
 			const deletePromise = deleteSelectedTimelineItems({
 				selections: selectedItems,
 				tracks,
-				setPropStatuses,
+				deleteKeyframes,
 				clientId,
 				confirm,
 				propStatuses,
@@ -145,6 +147,7 @@ export const useDeleteTimelineItems = () => {
 			}
 		},
 		[
+			deleteKeyframes,
 			calculateTimeline,
 			confirm,
 			currentSelection,

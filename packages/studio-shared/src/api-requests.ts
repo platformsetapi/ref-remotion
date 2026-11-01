@@ -47,6 +47,7 @@ import type {
 	RequiredChromiumOptions,
 } from './render-job';
 import type {SequenceNodePathMutation} from './sequence-node-path-mutation';
+import type {SourceFileVersion} from './source-file-version';
 import type {SymbolicatedStackFrame} from './stack-types';
 import type {EnumPath} from './stringify-default-props';
 import type {TerminalId} from './terminal';
@@ -785,8 +786,16 @@ export type DeleteKeyframesRequest = {
 	clientId: string;
 };
 
+export type KeyframeMutationResult = {
+	nodePath: SequencePropsSubscriptionKey;
+	effectIndex: number | null;
+	props: Record<string, CanUpdateSequencePropSource>;
+	sourceVersion: SourceFileVersion | null;
+};
+
 export type DeleteKeyframesResponse = {
 	success: true;
+	results: KeyframeMutationResult[];
 };
 
 export type MoveKeyframesRequest = {
@@ -797,6 +806,7 @@ export type MoveKeyframesRequest = {
 
 export type MoveKeyframesResponse = {
 	success: true;
+	results: KeyframeMutationResult[];
 };
 
 export type AddEffectKeyframeRequest = {

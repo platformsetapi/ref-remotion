@@ -13,9 +13,12 @@ import {Internals} from 'remotion';
 import {FastRefreshContext} from '../../fast-refresh-context';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
 import {markDuplicationSelectionMutationsApplied} from '../../helpers/duplicated-element-selection';
+import {subscribeToPreviewServerEvents} from '../../helpers/preview-server-events';
 import {takePendingSequenceNodePathMutations} from '../../helpers/sequence-node-path-mutations';
+import {acceptSequencePropsSourceVersion} from '../../helpers/sequence-props-source-version';
 import {
 	reconcileCanvasDragPreviewStatuses,
+	resetCanvasDragPreviewsForSourceSession,
 	remapCanvasDragPreviews,
 } from '../canvas-drag-preview';
 import {ExpandedTracksSetterContext} from '../ExpandedTracksProvider';
@@ -31,13 +34,14 @@ export const SequencePropsObserver = ({
 	) => void;
 }) => {
 	const {subscribeToEvent} = useContext(StudioServerConnectionCtx);
+	const visualModeSetters = useContext(Internals.VisualModeSettersContext);
 	const {
 		remapPropStatuses,
 		setPropStatuses,
 		updateDragOverrides,
 		remapDragOverrideFields,
 		remapEffectDragOverrideFields,
-	} = useContext(Internals.VisualModeSettersContext);
+	} = visualModeSetters;
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -76,11 +80,31 @@ export const SequencePropsObserver = ({
 		ExpandedTracksSetterContext,
 	);
 	const {remapSelectionNodePaths} = useTimelineSelection();
+	useEffect(
+		() =>
+			subscribeToPreviewServerEvents((event) => {
+				if (event.type === 'init')
+					resetCanvasDragPreviewsForSourceSession(
+						visualModeSetters,
+						event.sourceVersionSessionId,
+					);
+			}),
+		[visualModeSetters],
+	);
 	useEffect(() => {
 		const handleEvent = (event: EventSourceEvent) => {
 			if (event.type !== 'sequence-props-updated') {
 				return;
 			}
+
+			if (
+				!acceptSequencePropsSourceVersion(
+					updateDragOverrides,
+					event.nodePath,
+					event.sourceVersion,
+				)
+			)
+				return;
 
 			// Every save re-sends all subscribed nodes of the file. Keep unchanged
 			// statuses so their consumers do not rerender.

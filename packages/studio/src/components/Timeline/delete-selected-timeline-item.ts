@@ -9,8 +9,8 @@ import type {ConfirmationDialogFunction} from '../ConfirmationDialog-types';
 import {deleteNodes} from '../delete-nodes-api';
 import {deleteEffects as deleteEffectsApi} from '../effect-operations-api';
 import {showNotification} from '../Notifications/NotificationCenter';
+import type {useDeleteKeyframes} from './call-delete-keyframe';
 import {deleteSelectedKeyframes} from './delete-selected-keyframe';
-import type {SetPropStatuses} from './save-sequence-prop';
 import {
 	getTimelineSelectionFromNodePathInfo,
 	getTimelineSelectionKey,
@@ -235,7 +235,7 @@ const containsOnlyKeyframesAndEasings = (
 export const deleteSelectedTimelineItems = ({
 	selections,
 	tracks,
-	setPropStatuses,
+	deleteKeyframes,
 	clientId,
 	confirm,
 	propStatuses,
@@ -243,7 +243,7 @@ export const deleteSelectedTimelineItems = ({
 }: {
 	selections: readonly TimelineSelection[];
 	readonly tracks: readonly TimelineTrackData[];
-	setPropStatuses: SetPropStatuses;
+	deleteKeyframes: ReturnType<typeof useDeleteKeyframes>;
 	clientId: string;
 	confirm: ConfirmationDialogFunction;
 	propStatuses: PropStatuses;
@@ -266,7 +266,7 @@ export const deleteSelectedTimelineItems = ({
 				frame: selection.frame,
 			})),
 			tracks,
-			setPropStatuses,
+			deleteKeyframes,
 			clientId,
 			propStatuses,
 			timelinePosition,

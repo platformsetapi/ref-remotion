@@ -43,7 +43,7 @@ import {pasteEffects} from '../effect-operations-api';
 import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import {callAddKeyframes} from './call-add-keyframe';
-import {callDeleteKeyframes} from './call-delete-keyframe';
+import {useDeleteKeyframes} from './call-delete-keyframe';
 import {
 	callUpdateEffectKeyframeSettings,
 	callUpdateSequenceKeyframeSettings,
@@ -665,6 +665,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 		Internals.VisualModePropStatusesRefContext,
 	);
 	const {setPropStatuses} = useContext(Internals.VisualModeSettersContext);
+	const deleteKeyframes = useDeleteKeyframes({notifyOnError: false});
 	const sequencesRef = useContext(Internals.SequenceManagerRefContext);
 	const overrideIdToNodePathMappingsRef = useContext(
 		OverrideIdToNodePathMappingsRefContext,
@@ -961,7 +962,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 								sequences: sequencesRef.current,
 								overrideIdsToNodePaths: overrideIdToNodePathMappingsRef.current,
 							}).tracks,
-							setPropStatuses,
+							deleteKeyframes,
 							clientId,
 							confirm,
 							propStatuses,
@@ -1100,7 +1101,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 							}),
 						);
 
-						return callDeleteKeyframes({
+						return deleteKeyframes({
 							sequenceKeyframes: effectIndex === null ? deletions : [],
 							effectKeyframes:
 								effectIndex === null
@@ -1109,7 +1110,6 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 											...deletion,
 											effectIndex,
 										})),
-							setPropStatuses,
 							clientId,
 						})
 							.then(() =>
@@ -1465,6 +1465,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 			document.removeEventListener('paste', handlePaste);
 		};
 	}, [
+		deleteKeyframes,
 		calculateTimeline,
 		canSelect,
 		confirm,

@@ -68,6 +68,7 @@ import {
 	type SelectedOutlineScaleDragState,
 } from '../components/SelectedOutlineOverlay';
 import {getSelectedOutlineUvHandleTimelineSelection} from '../components/SelectedOutlineUvControls';
+import {callDeleteKeyframes} from '../components/Timeline/call-delete-keyframe';
 import {
 	deleteSelectedTimelineItems,
 	getTimelineSelectionAfterDeletingItems,
@@ -381,6 +382,24 @@ const makeLeftEdgePropStatuses = (
 
 	return propStatuses;
 };
+
+const deleteKeyframes = (
+	action: Omit<
+		Parameters<typeof callDeleteKeyframes>[0],
+		'setters' | 'getSnapshot'
+	>,
+) =>
+	callDeleteKeyframes({
+		...action,
+		setters: {
+			setPropStatuses: () => undefined,
+			setPropStatusesBatch: () => undefined,
+			updateDragOverrides: () => undefined,
+			updateDragOverridesBatch: () => undefined,
+			updateEffectDragOverridesBatch: () => undefined,
+		},
+		getSnapshot: () => null,
+	});
 
 test('timeline marquee rectangle intersection detects overlapping targets', () => {
 	expect(
@@ -8680,7 +8699,7 @@ test('Deleting unsupported mixed timeline selection types returns null', () => {
 				},
 			],
 			tracks: [],
-			setPropStatuses: () => undefined,
+			deleteKeyframes,
 			clientId: 'client',
 			confirm,
 			propStatuses: {},
@@ -8832,7 +8851,8 @@ test('Deleting selected keyframes ignores selected easings', async () => {
 		});
 
 		return Promise.resolve({
-			json: () => Promise.resolve({success: true, data: {}}),
+			json: () =>
+				Promise.resolve({success: true, data: {success: true, results: []}}),
 		} as Response);
 	}) as typeof fetch;
 
@@ -8856,7 +8876,7 @@ test('Deleting selected keyframes ignores selected easings', async () => {
 				sequences: [makeTimelineSequence({schema})],
 				overrideIdsToNodePaths: {override: nodePath},
 			}).tracks,
-			setPropStatuses: () => undefined,
+			deleteKeyframes,
 			clientId: 'client',
 			confirm: () => Promise.resolve(true),
 			propStatuses: {},
@@ -8932,7 +8952,8 @@ test('Deleting all selected keyframes preserves the value at the playhead', asyn
 		});
 
 		return Promise.resolve({
-			json: () => Promise.resolve({success: true, data: {}}),
+			json: () =>
+				Promise.resolve({success: true, data: {success: true, results: []}}),
 		} as Response);
 	}) as typeof fetch;
 
@@ -8954,7 +8975,7 @@ test('Deleting all selected keyframes preserves the value at the playhead', asyn
 				sequences: [makeTimelineSequence({schema})],
 				overrideIdsToNodePaths: {override: nodePath},
 			}).tracks,
-			setPropStatuses: () => undefined,
+			deleteKeyframes,
 			clientId: 'client',
 			confirm: () => Promise.resolve(true),
 			propStatuses,

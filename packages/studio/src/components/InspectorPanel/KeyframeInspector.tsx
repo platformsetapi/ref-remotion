@@ -31,10 +31,7 @@ import {useRuntimeValues} from '../../helpers/use-runtime-values';
 import {VERTICAL_SCROLLBAR_CLASSNAME} from '../Menu/is-menu-item';
 import {InputDragger} from '../NewComposition/InputDragger';
 import {showNotification} from '../Notifications/NotificationCenter';
-import {
-	callDeleteEffectKeyframe,
-	callDeleteSequenceKeyframe,
-} from '../Timeline/call-delete-keyframe';
+import {useDeleteKeyframes} from '../Timeline/call-delete-keyframe';
 import {callMoveKeyframes} from '../Timeline/call-move-keyframe';
 import {finishKeyframePreview} from '../Timeline/finish-keyframe-preview';
 import {
@@ -157,7 +154,7 @@ export const KeyframeInspector: React.FC<{
 	const runtimeValues = useRuntimeValues(track?.sequence.controls ?? null);
 	const videoConfig = useVideoConfig();
 	const {propStatuses} = useContext(Internals.VisualModePropStatusesContext);
-	const {setPropStatuses, updateEffectDragOverridesBatch} = useContext(
+	const {updateEffectDragOverridesBatch} = useContext(
 		Internals.VisualModeSettersContext,
 	);
 	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
@@ -166,6 +163,7 @@ export const KeyframeInspector: React.FC<{
 	);
 	const currentSelection = useCurrentTimelineSelectionStateAsRef();
 	const frameEditRevision = useRef(0);
+	const deleteKeyframes = useDeleteKeyframes({notifyOnError: true});
 	const {getDragOverrides, getEffectDragOverrides} = useContext(
 		Internals.VisualModeDragOverridesContext,
 	);
@@ -486,7 +484,7 @@ export const KeyframeInspector: React.FC<{
 					clientId: previewServerState.clientId,
 				});
 			})
-				.then(() => preview.acknowledge({canUpdate: true, results: []}))
+				.then((response) => preview.acknowledgeKeyframes(response.results))
 				.catch((error) => {
 					finishKeyframePreview({
 						preview,
@@ -555,27 +553,20 @@ export const KeyframeInspector: React.FC<{
 				selectItems([parentSelection], {reveal: true});
 			}
 
-			if (details.type === 'sequence') {
-				callDeleteSequenceKeyframe({
-					fileName: details.fileName,
-					nodePath: details.nodePath,
-					fieldKey: details.field.key,
-					sourceFrame: details.sourceFrame,
-					schema: details.schema,
-					setPropStatuses,
-					clientId: previewServerState.clientId,
-				}).catch(() => undefined);
-				return;
-			}
-
-			callDeleteEffectKeyframe({
+			const change = {
 				fileName: details.fileName,
 				nodePath: details.nodePath,
-				effectIndex: details.effectIndex,
 				fieldKey: details.field.key,
 				sourceFrame: details.sourceFrame,
 				schema: details.schema,
-				setPropStatuses,
+				valueWhenLastKeyframeDeleted: null,
+			};
+			deleteKeyframes({
+				sequenceKeyframes: details.type === 'sequence' ? [change] : [],
+				effectKeyframes:
+					details.type === 'effect'
+						? [{...change, effectIndex: details.effectIndex}]
+						: [],
 				clientId: previewServerState.clientId,
 			}).catch(() => undefined);
 		},
@@ -584,7 +575,7 @@ export const KeyframeInspector: React.FC<{
 			parentSelection,
 			previewServerState,
 			selectItems,
-			setPropStatuses,
+			deleteKeyframes,
 		],
 	);
 

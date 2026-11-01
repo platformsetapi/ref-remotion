@@ -1,8 +1,10 @@
 import type {
 	SequenceNodePathMutation,
 	SaveSequencePropsResponse,
+	KeyframeMutationResult,
 } from '@remotion/studio-shared';
 import type {ContextType} from 'react';
+import {unstable_batchedUpdates} from 'react-dom';
 import type {
 	CanUpdateSequencePropSource,
 	CanUpdateSequencePropsResponse,
@@ -10,6 +12,10 @@ import type {
 	SequencePropsSubscriptionKey,
 } from 'remotion';
 import {Internals} from 'remotion';
+import {
+	acceptSequencePropsSourceVersion,
+	getSequencePropsSourceSession,
+} from '../helpers/sequence-props-source-version';
 import {deepEqual} from './RenderModal/SchemaEditor/deep-equal';
 import type {SetPropStatuses} from './Timeline/save-sequence-prop';
 
@@ -32,6 +38,7 @@ type Field = {
 	ownedStatuses: Set<CanUpdateSequencePropSource>;
 };
 type Store = {
+	sourceSessionId: string | null;
 	fields: Map<string, Field>;
 	remapRevision: number;
 };
@@ -109,7 +116,11 @@ const getFieldStatusRestoration = (
 	};
 };
 
-const reconcileField = (store: Store, field: Field) => {
+const reconcileField = (
+	store: Store,
+	field: Field,
+	update: Setters['updateDragOverrides'] | null,
+) => {
 	const confirmed = field.layers.findLastIndex((layer) => {
 		if (!layer.acknowledged) return false;
 		if (deepEqual(layer.savedStatus, field.sourceStatus)) return true;
@@ -149,7 +160,7 @@ const reconcileField = (store: Store, field: Field) => {
 		);
 	});
 	if (confirmed !== -1) field.layers = field.layers.slice(confirmed + 1);
-	publishField(field, false, null);
+	publishField(field, false, update);
 	if (
 		field.layers.length === 0 &&
 		store.fields.get(fieldKey(field.nodePath, field.key, field.effectIndex)) ===
@@ -176,7 +187,7 @@ export const reconcileCanvasDragPreviewStatuses = (
 			const field = store.fields.get(fieldKey(nodePath, key, effectIndex));
 			if (!field) continue;
 			field.sourceStatus = status;
-			reconcileField(store, field);
+			reconcileField(store, field, null);
 			const pending = field.layers.findLast(
 				(layer) => layer.optimisticStatus !== null,
 			)?.optimisticStatus;
@@ -221,7 +232,11 @@ export const createCanvasDragPreview = ({
 }) => {
 	let store = stores.get(updateDragOverrides);
 	if (!store) {
-		store = {fields: new Map(), remapRevision: 0};
+		store = {
+			fields: new Map(),
+			remapRevision: 0,
+			sourceSessionId: getSequencePropsSourceSession(),
+		};
 		stores.set(updateDragOverrides, store);
 	}
 
@@ -232,6 +247,9 @@ export const createCanvasDragPreview = ({
 	let indexedRemapRevision = -1;
 	let ended = false;
 	const effectWriters = new Map<number, Setters['updateDragOverrides']>();
+	let sequenceBatchWriter: Setters['updateDragOverridesBatch'] | null = null;
+	let effectBatchWriter: Setters['updateEffectDragOverridesBatch'] | null =
+		null;
 	const publishStatuses = (
 		updates: Parameters<Setters['setPropStatusesBatch']>[0],
 	) => {
@@ -433,6 +451,7 @@ export const createCanvasDragPreview = ({
 			}[],
 			updateBatch: Setters['updateDragOverridesBatch'],
 		) => {
+			sequenceBatchWriter = updateBatch;
 			const updates: Parameters<
 				Setters['updateDragOverridesBatch']
 			>[0][number][] = [];
@@ -458,6 +477,7 @@ export const createCanvasDragPreview = ({
 			}[],
 			updateBatch: Setters['updateEffectDragOverridesBatch'],
 		) => {
+			effectBatchWriter = updateBatch;
 			const updates: Parameters<
 				Setters['updateEffectDragOverridesBatch']
 			>[0][number][] = [];
@@ -499,6 +519,69 @@ export const createCanvasDragPreview = ({
 		},
 		cancel: remove,
 		fail: remove,
+		acknowledgeKeyframes: (results: readonly KeyframeMutationResult[]) =>
+			unstable_batchedUpdates(() => {
+				if (ended) return;
+				const saved = new Map<
+					string,
+					{status: CanUpdateSequencePropSource; current: boolean}
+				>();
+				for (const result of results) {
+					const nodePath = getNodePath(result.nodePath);
+					if (nodePath === null) continue;
+					const current = acceptSequencePropsSourceVersion(
+						updateDragOverrides,
+						nodePath,
+						result.sourceVersion,
+					);
+					for (const [key, status] of Object.entries(result.props))
+						saved.set(fieldKey(nodePath, key, result.effectIndex), {
+							status,
+							current,
+						});
+				}
+
+				const restorations: Parameters<
+					Setters['setPropStatusesBatch']
+				>[0][number][] = [];
+				const sequenceUpdates: Parameters<
+					Setters['updateDragOverridesBatch']
+				>[0][number][] = [];
+				const effectUpdates: Parameters<
+					Setters['updateEffectDragOverridesBatch']
+				>[0][number][] = [];
+				for (const [field, layer] of owned) {
+					const layerIndex = field.layers.indexOf(layer);
+					if (layerIndex === -1) continue;
+					const result = saved.get(
+						fieldKey(field.nodePath, field.key, field.effectIndex),
+					);
+					if (!result) continue;
+					// The response is parsed from the persisted edit. Publish it atomically
+					// with retiring its preview, even when source notifications are coalesced.
+					// Preserve a newer source snapshot observed while HTTP was pending.
+					if (result.current) field.sourceStatus = result.status;
+					field.layers = field.layers.slice(layerIndex + 1);
+					const {effectIndex} = field;
+					reconcileField(
+						store,
+						field,
+						effectIndex === null
+							? sequenceBatchWriter === null
+								? null
+								: (nodePath, update) => sequenceUpdates.push({nodePath, update})
+							: effectBatchWriter === null
+								? null
+								: (nodePath, update) =>
+										effectUpdates.push({nodePath, effectIndex, update}),
+					);
+					restorations.push(getFieldStatusRestoration(field));
+				}
+
+				if (sequenceUpdates.length > 0) sequenceBatchWriter?.(sequenceUpdates);
+				if (effectUpdates.length > 0) effectBatchWriter?.(effectUpdates);
+				publishStatuses(restorations);
+			}),
 		acknowledge: (response: SaveSequencePropsResponse | null) => {
 			if (ended) return;
 			if (!response?.canUpdate) {
@@ -526,7 +609,7 @@ export const createCanvasDragPreview = ({
 				layer.allowEquivalentSource =
 					savedStatus === null || savedStatus === undefined;
 				layer.savedStatus = savedStatus ?? layer.optimisticStatus;
-				reconcileField(store, field);
+				reconcileField(store, field, null);
 				if (!field.layers.includes(layer))
 					restorations.push(getFieldStatusRestoration(field));
 			}
@@ -534,6 +617,51 @@ export const createCanvasDragPreview = ({
 			publishStatuses(restorations);
 		},
 	};
+};
+
+export const resetCanvasDragPreviewsForSourceSession = (
+	setters: Pick<
+		Setters,
+		| 'updateDragOverrides'
+		| 'updateDragOverridesBatch'
+		| 'updateEffectDragOverridesBatch'
+		| 'setPropStatusesBatch'
+	>,
+	sessionId: string | null,
+) => {
+	const store = stores.get(setters.updateDragOverrides);
+	if (!store || sessionId === null || store.sourceSessionId === sessionId)
+		return;
+	store.sourceSessionId = sessionId;
+	const statuses: Parameters<Setters['setPropStatusesBatch']>[0][number][] = [];
+	const sequenceUpdates: Parameters<
+		Setters['updateDragOverridesBatch']
+	>[0][number][] = [];
+	const effectUpdates: Parameters<
+		Setters['updateEffectDragOverridesBatch']
+	>[0][number][] = [];
+	for (const field of store.fields.values()) {
+		field.layers = [];
+		statuses.push(getFieldStatusRestoration(field));
+		const {effectIndex} = field;
+		publishField(
+			field,
+			false,
+			effectIndex === null
+				? (nodePath, update) => sequenceUpdates.push({nodePath, update})
+				: (nodePath, update) =>
+						effectUpdates.push({nodePath, effectIndex, update}),
+		);
+	}
+
+	store.fields.clear();
+	unstable_batchedUpdates(() => {
+		if (sequenceUpdates.length)
+			setters.updateDragOverridesBatch(sequenceUpdates);
+		if (effectUpdates.length)
+			setters.updateEffectDragOverridesBatch(effectUpdates);
+		if (statuses.length) setters.setPropStatusesBatch(statuses);
+	});
 };
 
 export const remapCanvasDragPreviews = (

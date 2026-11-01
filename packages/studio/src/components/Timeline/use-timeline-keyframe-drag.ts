@@ -491,10 +491,7 @@ const saveKeyframeDrag = ({
 		setPropStatusesBatch: preview.setPropStatusesBatch,
 		clientId,
 	})
-		.then(() => {
-			// Moving keyframes confirms persistence without returning parsed prop statuses.
-			preview.acknowledge({canUpdate: true, results: []});
-		})
+		.then((response) => preview.acknowledgeKeyframes(response.results))
 		.catch((error) => {
 			finishKeyframePreview({
 				preview,
