@@ -2,6 +2,7 @@ import type {StudioKeyboardShortcutAction} from '@remotion/studio-shared';
 import type React from 'react';
 import {useContext, useEffect} from 'react';
 import {Internals} from 'remotion';
+import {isKeyboardEventOwnedByControl} from '../helpers/is-keyboard-event-owned-by-control';
 import {isMac} from '../helpers/is-mac';
 import {getRenderOutputPlaybackTarget} from '../helpers/render-output-playback';
 import {useKeybinding} from '../helpers/use-keybinding';
@@ -39,19 +40,7 @@ export const RenderOutputKeyboardShortcuts: React.FC = () => {
 				(isMac ? event.ctrlKey : event.metaKey)
 			)
 				return;
-			// Native controls and editable/focusable controls own their key events.
-			const ownsKeyboard = (element: EventTarget | null) =>
-				element instanceof Element &&
-				Boolean(
-					element.closest(
-						'video, audio, input, textarea, select, button, a[href], [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="slider"], [role="combobox"], [role="button"], [role="checkbox"], [role="switch"], [role="tab"], [role="radio"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="treeitem"]',
-					),
-				);
-			if (
-				ownsKeyboard(document.activeElement) ||
-				event.composedPath().some(ownsKeyboard)
-			)
-				return;
+			if (isKeyboardEventOwnedByControl(event)) return;
 			const target = getRenderOutputPlaybackTarget(
 				compositionManagerRef.current.canvasContent,
 			);

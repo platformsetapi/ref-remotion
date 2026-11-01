@@ -452,6 +452,15 @@ export const withInteractivitySchema = <
 			schemaKeys: activeKeys,
 			propsToDelete,
 		});
+		// Names are hidden from the property controls, but source-only renames still
+		// need to reach sequence registration when a webpack rebuild is suppressed.
+		const nameStatus = propStatus?.name;
+		if (flatSchema.name?.type === 'hidden' && nameStatus?.status === 'static') {
+			mergedProps.name =
+				typeof nameStatus.codeValue === 'string'
+					? nameStatus.codeValue
+					: undefined;
+		}
 
 		if (OptimisticSequenceDeletion.isDeleted(nodePath, pendingDeletions)) {
 			return null;
