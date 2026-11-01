@@ -48,10 +48,7 @@ import {
 	callUpdateEffectKeyframeSettings,
 	callUpdateSequenceKeyframeSettings,
 } from './call-update-keyframe-settings';
-import {
-	deleteSelectedTimelineItems,
-	getTimelineSelectionAfterDeletingItems,
-} from './delete-selected-timeline-item';
+import {deleteSelectedTimelineItems} from './delete-selected-timeline-item';
 import {
 	readClipboardTextAndEffectsEnvelope,
 	writeEffectsClipboardEnvelope,
@@ -918,8 +915,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 			event: 'keydown',
 			action: 'cutEffects',
 			callback: (e) => {
-				const {selectedItems, clearSelection, selectItems} =
-					currentSelection.current;
+				const {selectedItems} = currentSelection.current;
 				if (selectedItems.length === 0) {
 					return;
 				}
@@ -957,6 +953,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 				writeEffectsClipboardEnvelope(envelope)
 					.then(() => {
 						const deletePromise = deleteSelectedTimelineItems({
+							currentSelection,
 							selections: selectedItems,
 							tracks: calculateTimeline({
 								sequences: sequencesRef.current,
@@ -968,20 +965,7 @@ const TimelineClipboardKeybindingsUnmemoized: React.FC = () => {
 							propStatuses,
 							timelinePosition: getCurrentFrame(),
 						});
-						return deletePromise?.then((deleted) => {
-							if (!deleted) {
-								return;
-							}
-
-							const nextSelection = getTimelineSelectionAfterDeletingItems({
-								selections: selectedItems,
-							});
-							if (nextSelection.length === 0) {
-								clearSelection();
-							} else {
-								selectItems(nextSelection);
-							}
-						});
+						return deletePromise;
 					})
 					.catch((err) => {
 						showNotification(

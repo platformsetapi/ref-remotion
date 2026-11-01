@@ -16,6 +16,7 @@ import {restartStudio} from '../api/restart-studio';
 import {seek} from '../api/seek';
 import {shutDownStudio} from '../api/shut-down-studio';
 import {getCurrentError} from '../error-overlay/current-error';
+import {canUseEffectOperations} from '../helpers/browser-studio-operations';
 import {useTimelineCalculator} from '../helpers/calculate-timeline';
 import {createFolderTree} from '../helpers/create-folder-tree';
 import {
@@ -53,6 +54,11 @@ import {
 } from './public-output-name';
 import {RenderQueueContext} from './RenderQueue/context';
 import {measureOutlineTargets} from './selected-outline-measurement';
+import {
+	deleteEffectsFromSource,
+	getPendingEffectDeletions,
+	isEffectDeletionPending,
+} from './Timeline/delete-effects-from-source';
 import {
 	duplicateSequencesFromSource,
 	getPendingSequenceDuplications,
@@ -291,6 +297,9 @@ export const WebMcp: FC = () => {
 	const {editorShowGuides, guidesList, setEditorShowGuides, setGuidesList} =
 		useContext(EditorShowGuidesContext);
 	const sequencesRef = useContext(Internals.SequenceManagerRefContext);
+	const propStatusesRef = useContext(
+		Internals.VisualModePropStatusesRefContext,
+	);
 	const {overrideIdToNodePathMappings} = useContext(
 		Internals.OverrideIdsToNodePathsGettersContext,
 	);
@@ -928,7 +937,7 @@ export const WebMcp: FC = () => {
 					name: 'get_sequences',
 					title: 'Get Studio sequences',
 					description:
-						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, type, source stack, selection availability, and duplication progress. Pending duplications include source nodes that are temporarily unmounted during refresh.',
+						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, effects, source stack, selection availability, and pending duplication or effect deletion. Pending operations include source nodes that are temporarily unmounted during refresh.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -937,19 +946,180 @@ export const WebMcp: FC = () => {
 					annotations: {readOnlyHint: true},
 					execute: () => {
 						const compositionId = currentCompositionRef.current;
+						const pendingEffectDeletions = getPendingEffectDeletions();
+						const pendingEffectsByNode = new Map(
+							pendingEffectDeletions.map((entry) => [
+								JSON.stringify([
+									entry.nodePath.absolutePath,
+									entry.nodePath.nodePath,
+								]),
+								entry,
+							]),
+						);
+						const canDeleteEffects =
+							timelineSelectionRef.current.canSelect &&
+							canUseEffectOperations();
 						return Promise.resolve({
 							currentContent: currentContentRef.current,
 							pendingDuplications: getPendingSequenceDuplications(),
+							pendingEffectDeletions: pendingEffectDeletions.map(
+								({nodePath, effectIndices}) => ({
+									absolutePath: nodePath.absolutePath,
+									nodePath: nodePath.nodePath,
+									effectIndices,
+								}),
+							),
 							sequences:
 								compositionId === null
 									? []
-									: getCurrentTimeline().map((track) => ({
-											...serializeSequence(track),
-											duplicating:
-												track.nodePathInfo !== null &&
-												isSequenceDuplicationPending(track.nodePathInfo),
-										})),
+									: getCurrentTimeline().map((track) => {
+											const nodePath =
+												track.nodePathInfo?.sequenceSubscriptionKey ?? null;
+											const pendingEffects = nodePath
+												? pendingEffectsByNode.get(
+														JSON.stringify([
+															nodePath.absolutePath,
+															nodePath.nodePath,
+														]),
+													)
+												: undefined;
+											return {
+												...serializeSequence(track),
+												duplicating:
+													track.nodePathInfo !== null &&
+													isSequenceDuplicationPending(track.nodePathInfo),
+												effects: track.sequence.effects.map(
+													(effect, effectIndex) => {
+														const status = nodePath
+															? Internals.getEffectPropStatusesCtx({
+																	propStatuses: propStatusesRef.current,
+																	nodePath,
+																	effectIndex,
+																})
+															: null;
+														return {
+															effectIndex,
+															type: effect.type,
+															label: effect.label,
+															canDelete:
+																canDeleteEffects &&
+																pendingEffects === undefined &&
+																status?.type === 'can-update-effect',
+															deleting:
+																pendingEffects !== undefined &&
+																Internals.OptimisticEffectDeletion.matches(
+																	pendingEffects,
+																	track.sequence.effects,
+																) &&
+																pendingEffects.effectIndices.includes(
+																	effectIndex,
+																),
+														};
+													},
+												),
+											};
+										}),
 						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'delete_effect',
+					title: 'Delete Studio effect',
+					description:
+						'Delete an effect from a sequence using the same action as the Studio interface. Read the current effectIndex from get_sequences before deleting. This edits the source and affects every runtime instance of that source node. Success means the deletion was saved; the preview may still be refreshing.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							sequenceId: {
+								type: 'string',
+								minLength: 1,
+								description: 'The sequence ID returned by get_sequences.',
+							},
+							effectIndex: {
+								type: 'integer',
+								minimum: 0,
+								description:
+									'The current zero-based effect index returned by get_sequences.',
+							},
+						},
+						required: ['sequenceId', 'effectIndex'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({sequenceId, effectIndex}) => {
+						if (typeof sequenceId !== 'string' || sequenceId.length === 0) {
+							throw new Error('sequenceId must be a non-empty string.');
+						}
+
+						if (
+							typeof effectIndex !== 'number' ||
+							!Number.isInteger(effectIndex) ||
+							effectIndex < 0
+						) {
+							throw new Error('effectIndex must be a non-negative integer.');
+						}
+
+						if (currentCompositionRef.current === null) {
+							throw new Error('No composition is currently selected.');
+						}
+
+						if (
+							!timelineSelectionRef.current.canSelect ||
+							!canUseEffectOperations()
+						) {
+							throw new Error('Studio effect editing is unavailable.');
+						}
+
+						const track = getCurrentTimeline().find(
+							(candidate) => candidate.sequence.id === sequenceId,
+						);
+						if (!track) {
+							throw new Error(
+								`Sequence ${sequenceId} not found in the current composition.`,
+							);
+						}
+
+						const nodePath =
+							track.nodePathInfo?.sequenceSubscriptionKey ?? null;
+						if (nodePath === null) {
+							throw new Error(
+								`The source for sequence ${sequenceId} is unavailable.`,
+							);
+						}
+
+						if (!track.sequence.effects[effectIndex]) {
+							throw new Error(
+								`Effect ${effectIndex} not found on sequence ${sequenceId}.`,
+							);
+						}
+
+						if (isEffectDeletionPending(nodePath)) {
+							return {sequenceId, effectIndex, status: 'already-pending'};
+						}
+
+						const status = Internals.getEffectPropStatusesCtx({
+							propStatuses: propStatusesRef.current,
+							nodePath,
+							effectIndex,
+						});
+						if (status.type !== 'can-update-effect') {
+							throw new Error('The effect source is unavailable for deletion.');
+						}
+
+						const result = await deleteEffectsFromSource(
+							[
+								{
+									nodePath,
+									effectIndices: [effectIndex],
+									effects: track.sequence.effects,
+								},
+							],
+							timelineSelectionRef,
+						);
+						return {sequenceId, effectIndex, ...result};
 					},
 				},
 				{signal: controller.signal},
@@ -1905,6 +2075,7 @@ export const WebMcp: FC = () => {
 		calculateTimeline,
 		compositionManagerRef,
 		isPlaying,
+		propStatusesRef,
 		selectComposition,
 		sequencesRef,
 		setEditorShowGuides,

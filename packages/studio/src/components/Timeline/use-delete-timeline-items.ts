@@ -78,6 +78,7 @@ export const useDeleteTimelineItems = () => {
 				overrideIdsToNodePaths: overrideIdToNodePathMappingsRef.current,
 			});
 			const deletePromise = deleteSelectedTimelineItems({
+				currentSelection,
 				selections: selectedItems,
 				tracks,
 				deleteKeyframes,
@@ -88,6 +89,17 @@ export const useDeleteTimelineItems = () => {
 			});
 
 			if (deletePromise !== null) {
+				if (
+					selectedItems.every(
+						(item) =>
+							item.type === 'sequence-effect' ||
+							item.type === 'sequence-all-effects',
+					)
+				) {
+					deletePromise.catch(() => undefined);
+					return;
+				}
+
 				const updateSelectionAfterDeletion = () => {
 					const nextSelection = getTimelineSelectionAfterDeletingItems({
 						selections: selectedItems,

@@ -379,6 +379,7 @@ const TimelineSequenceItemInner: React.FC<{
 }) => {
 	const isPackedTrack = sequence.timelineTrack?.role === 'track';
 	const nodePath = nodePathInfo?.sequenceSubscriptionKey ?? null;
+	const pendingEffectDeletion = Internals.useOptimisticEffectDeletion(nodePath);
 	const calculateTimeline = useTimelineCalculator();
 	const sequencesRef = useContext(Internals.SequenceManagerRefContext);
 	const overrideIdToNodePathMappingsRef = useContext(
@@ -1301,6 +1302,7 @@ const TimelineSequenceItemInner: React.FC<{
 	}, [canRenameThisSequence]);
 
 	const canAddEffect =
+		pendingEffectDeletion === null &&
 		nodePathInfo?.supportsEffects === true &&
 		canMutateEffects &&
 		Boolean(validatedLocation?.source);

@@ -8690,6 +8690,7 @@ test('Deleting unsupported mixed timeline selection types returns null', () => {
 
 	expect(
 		deleteSelectedTimelineItems({
+			currentSelection: null,
 			selections: [
 				{type: 'sequence', nodePathInfo: sequenceNodePathInfo},
 				{
@@ -8858,6 +8859,7 @@ test('Deleting selected keyframes ignores selected easings', async () => {
 
 	try {
 		const result = await deleteSelectedTimelineItems({
+			currentSelection: null,
 			selections: [
 				{
 					type: 'keyframe',
@@ -8959,6 +8961,7 @@ test('Deleting all selected keyframes preserves the value at the playhead', asyn
 
 	try {
 		const result = await deleteSelectedTimelineItems({
+			currentSelection: null,
 			selections: [
 				{
 					type: 'keyframe',
@@ -9307,6 +9310,7 @@ test('Shift+click can select an inspector effect range', () => {
 					documentationLink: null,
 					effectIndex: Number(nodePathInfo.auxiliaryKeys[1]),
 					effectSchema: {},
+					effects: [],
 				},
 				children: [],
 			},

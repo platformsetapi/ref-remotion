@@ -13,6 +13,7 @@ import {Internals} from 'remotion';
 import {FastRefreshContext} from '../../fast-refresh-context';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
 import {markDuplicationSelectionMutationsApplied} from '../../helpers/duplicated-element-selection';
+import {remapOptimisticEffectDeletions} from '../../helpers/effect-deletion-state';
 import {subscribeToPreviewServerEvents} from '../../helpers/preview-server-events';
 import {takePendingSequenceNodePathMutations} from '../../helpers/sequence-node-path-mutations';
 import {acceptSequencePropsSourceVersion} from '../../helpers/sequence-props-source-version';
@@ -141,6 +142,7 @@ export const SequencePropsObserver = ({
 			},
 			mutations,
 		);
+		for (const mutation of mutations) remapOptimisticEffectDeletions(mutation);
 		remapSelectionNodePaths(mutations);
 		remapCollapsedLayers(mutations);
 

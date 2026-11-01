@@ -219,6 +219,9 @@ const resolveKeyframeControlTarget = ({
 	}
 
 	const tree = buildTimelineTree({
+		pendingEffectDeletion: Internals.OptimisticEffectDeletion.get(
+			nodePathInfo.sequenceSubscriptionKey,
+		),
 		sequence: track.sequence,
 		nodePathInfo: track.nodePathInfo,
 		getDragOverrides,

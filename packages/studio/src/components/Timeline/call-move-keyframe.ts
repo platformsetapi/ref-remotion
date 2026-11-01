@@ -10,6 +10,7 @@ import type {
 	SequencePropsSubscriptionKey,
 } from 'remotion';
 import {getBrowserStudioOperations} from '../../helpers/browser-studio-operations';
+import {assertEffectChainEditable} from '../../helpers/effect-deletion-state';
 import {callApi} from '../call-api';
 import type {SetPropStatuses} from './save-sequence-prop';
 
@@ -202,6 +203,13 @@ export const callMoveKeyframes = ({
 		| null;
 	clientId: string;
 }): Promise<MoveKeyframesResponse> => {
+	try {
+		for (const nodePath of effectKeyframes.map((change) => change.nodePath))
+			assertEffectChainEditable(nodePath);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+
 	if (sequenceKeyframes.length === 0 && effectKeyframes.length === 0) {
 		return Promise.resolve({success: true, results: []});
 	}

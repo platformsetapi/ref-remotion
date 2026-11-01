@@ -16,6 +16,7 @@ let sourceSessionId: string | null = null;
 
 export const getSequencePropsSourceSession = () => sourceSessionId;
 export const setSequencePropsSourceSession = (sessionId: string | null) => {
+	if (sourceSessionId !== sessionId) Internals.OptimisticEffectDeletion.clear();
 	sourceSessionId = sessionId;
 };
 

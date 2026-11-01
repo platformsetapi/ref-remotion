@@ -10,6 +10,7 @@ import type {
 	SequencePropsSubscriptionKey,
 	InteractivitySchema,
 } from 'remotion';
+import {assertEffectChainEditable} from '../../helpers/effect-deletion-state';
 import {saveSequenceProps as saveSequencePropsApi} from '../sequence-props-api';
 import type {AddSequenceKeyframeChange} from './call-add-keyframe';
 import {
@@ -118,6 +119,13 @@ const saveSequencePropsInternal = (
 	}: SaveSequencePropsOptions,
 	reportResult: boolean,
 ): Promise<SaveSequencePropsResponse | void> => {
+	try {
+		for (const change of movedKeyframes?.effectKeyframes ?? [])
+			assertEffectChainEditable(change.nodePath);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+
 	const keyframesToAdd = addedKeyframes === null ? [] : addedKeyframes;
 	const sequenceKeyframes =
 		movedKeyframes === null ? [] : movedKeyframes.sequenceKeyframes;

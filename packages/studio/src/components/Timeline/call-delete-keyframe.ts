@@ -9,6 +9,7 @@ import {unstable_batchedUpdates} from 'react-dom';
 import type {SequencePropsSubscriptionKey, InteractivitySchema} from 'remotion';
 import {Internals} from 'remotion';
 import {getBrowserStudioOperations} from '../../helpers/browser-studio-operations';
+import {assertEffectChainEditable} from '../../helpers/effect-deletion-state';
 import {callApi} from '../call-api';
 import {createCanvasDragPreview} from '../canvas-drag-preview';
 import {showNotification} from '../Notifications/NotificationCenter';
@@ -68,6 +69,13 @@ export const callDeleteKeyframes = ({
 		typeof Internals.VisualModePropStatusesSubscriptionContext
 	>['getSnapshot'];
 }): Promise<void> => {
+	try {
+		for (const nodePath of effectKeyframes.map((change) => change.nodePath))
+			assertEffectChainEditable(nodePath);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+
 	if (sequenceKeyframes.length === 0 && effectKeyframes.length === 0)
 		return Promise.resolve();
 	const preview = createCanvasDragPreview({
