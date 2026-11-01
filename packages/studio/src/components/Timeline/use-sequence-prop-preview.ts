@@ -3,9 +3,8 @@ import {Internals} from 'remotion';
 import {createCanvasDragPreview} from '../canvas-drag-preview';
 
 export const useSequencePropPreview = () => {
-	const {updateDragOverrides, setPropStatuses} = useContext(
-		Internals.VisualModeSettersContext,
-	);
+	const {updateDragOverrides, setPropStatuses, setPropStatusesBatch} =
+		useContext(Internals.VisualModeSettersContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -17,7 +16,7 @@ export const useSequencePropPreview = () => {
 			active.current = createCanvasDragPreview({
 				updateDragOverrides,
 				setPropStatuses,
-				setPropStatusesBatch: null,
+				setPropStatusesBatch,
 				getPropStatuses: (nodePath) =>
 					propStatusesRef.current[
 						Internals.makeSequencePropsSubscriptionKey(nodePath)
@@ -26,7 +25,12 @@ export const useSequencePropPreview = () => {
 		}
 
 		return active.current;
-	}, [updateDragOverrides, setPropStatuses, propStatusesRef]);
+	}, [
+		updateDragOverrides,
+		setPropStatuses,
+		setPropStatusesBatch,
+		propStatusesRef,
+	]);
 	const takePreview = useCallback(() => {
 		const preview = getPreview();
 		active.current = null;

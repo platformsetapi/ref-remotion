@@ -3,7 +3,7 @@ import {
 	isSchemaFieldKeyframable,
 	stringifySequenceSubscriptionKey,
 } from '@remotion/studio-shared';
-import React, {useCallback, useContext, useMemo, useRef} from 'react';
+import React, {useCallback, useContext, useMemo} from 'react';
 import {unstable_batchedUpdates} from 'react-dom';
 import type {
 	CanUpdateSequencePropStatus,
@@ -34,7 +34,6 @@ import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import {useEditorOpening} from '../use-default-editor-info';
 import {getCopyContextForAgentsMenuItem} from './get-copy-context-for-agents-menu-item';
-import {getPlaybackRateKeyframeChanges} from './get-playback-rate-keyframe-changes';
 import {getSequencePropResetChanges} from './get-sequence-prop-reset-changes';
 import {
 	getKeyframeDisplayOffset,
@@ -63,6 +62,7 @@ import {
 } from './TimelineSelection';
 import {Transform3DModeContext} from './Transform3DModeContext';
 import {useClampSequenceTimingValue} from './use-clamp-sequence-timing-value';
+import {usePlaybackRatePreview} from './use-playback-rate-preview';
 import {useSequencePropPreview} from './use-sequence-prop-preview';
 
 const fieldRowBase: React.CSSProperties = {};
@@ -127,16 +127,10 @@ const Value: React.FC<{
 	const {clampTimingValue, clearTimingLimits} = useClampSequenceTimingValue();
 	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
 	const {
-		getPreview: getRetimingPreview,
-		takePreview: takeRetimingPreview,
-		cancelPreview: cancelRetimingPreview,
-	} = useSequencePropPreview();
-	const dragOverridesRef = useContext(
-		Internals.VisualModeDragOverridesRefContext,
-	);
-	const previewedKeyframes = useRef<
-		ReturnType<typeof getPlaybackRateKeyframeChanges>['previews']
-	>([]);
+		preview: previewPlaybackRate,
+		take: takePlaybackRatePreview,
+		cancel: cancelPlaybackRatePreview,
+	} = usePlaybackRatePreview({field, nodePath});
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -144,47 +138,7 @@ const Value: React.FC<{
 	const overrideIdToNodePathMappingsRef = useContext(
 		OverrideIdToNodePathMappingsRefContext,
 	);
-	const getPlaybackRateChanges = useCallback(
-		(value: unknown) => {
-			if (
-				field.key !== 'playbackRate' ||
-				nodePath === null ||
-				typeof value !== 'number'
-			) {
-				return null;
-			}
 
-			const currentStatus = Internals.getPropStatusesCtx(
-				propStatusesRef.current,
-				nodePath,
-			)?.playbackRate;
-			const previousPlaybackRate =
-				currentStatus?.status === 'static' &&
-				typeof currentStatus.codeValue === 'number'
-					? currentStatus.codeValue
-					: field.fieldSchema.default;
-			if (typeof previousPlaybackRate !== 'number') {
-				return null;
-			}
-
-			return getPlaybackRateKeyframeChanges({
-				nodePath,
-				sequences: sequencesRef.current,
-				overrideIdsToNodePaths: overrideIdToNodePathMappingsRef.current,
-				propStatuses: propStatusesRef.current,
-				previousPlaybackRate,
-				playbackRate: value,
-			});
-		},
-		[
-			field.fieldSchema.default,
-			field.key,
-			nodePath,
-			overrideIdToNodePathMappingsRef,
-			propStatusesRef,
-			sequencesRef,
-		],
-	);
 	// Items without an intrinsic duration need a finite loop range. Filling it
 	// with the current end keeps the output unchanged until the clip is extended.
 	const getLoopDurationChange = useCallback(
@@ -238,9 +192,7 @@ const Value: React.FC<{
 	const {getDragOverrides} = useContext(
 		Internals.VisualModeDragOverridesContext,
 	);
-	const {setEffectDragOverrides, clearEffectDragOverrides} = useContext(
-		Internals.VisualModeSettersContext,
-	);
+
 	const dragOverrideValue = useMemo(() => {
 		return nodePath === null
 			? undefined
@@ -273,21 +225,8 @@ const Value: React.FC<{
 		}
 
 		cancelPreview();
-		cancelRetimingPreview();
-		for (const preview of previewedKeyframes.current) {
-			if (preview.effectIndex !== null) {
-				clearEffectDragOverrides(preview.nodePath, preview.effectIndex);
-			}
-		}
-
-		previewedKeyframes.current = [];
-	}, [
-		cancelPreview,
-		cancelRetimingPreview,
-		clearEffectDragOverrides,
-		nodePath,
-		clearTimingLimits,
-	]);
+		cancelPlaybackRatePreview();
+	}, [cancelPreview, cancelPlaybackRatePreview, nodePath, clearTimingLimits]);
 
 	const onSave = useCallback<TimelineFieldOnSave>(
 		(value, options) => {
@@ -324,26 +263,18 @@ const Value: React.FC<{
 			}
 
 			const preview = takePreview();
-			const retimingPreview = takeRetimingPreview();
-			const effectPreviews = previewedKeyframes.current;
-			previewedKeyframes.current = [];
-			const finishRetimingPreview = () => {
-				retimingPreview.cancel();
-				for (const effect of effectPreviews) {
-					if (effect.effectIndex === null) continue;
-					const current = dragOverridesRef.current.getEffectDragOverrides(
-						effect.nodePath,
-						effect.effectIndex,
-					)[effect.fieldKey];
-					if (current?.type === 'keyframed' && current.status === effect.status)
-						clearEffectDragOverrides(effect.nodePath, effect.effectIndex);
-				}
-			};
+			const retiming = takePlaybackRatePreview(value);
+			if (retiming === null) {
+				preview.cancel();
+				return Promise.resolve();
+			}
+
+			const retimingPreview = retiming.preview;
 
 			const currentNodePath = preview.getNodePath(nodePath);
 			if (currentNodePath === null) {
 				preview.cancel();
-				finishRetimingPreview();
+				retimingPreview.cancel();
 				return Promise.resolve();
 			}
 
@@ -364,8 +295,11 @@ const Value: React.FC<{
 					);
 			}
 
-			return unstable_batchedUpdates(() =>
-				saveSequencePropsWithResult({
+			return unstable_batchedUpdates(() => {
+				// The rate and its retimed animations must share the same optimistic
+				// generation before another edit derives its relative timing.
+				retiming.commit();
+				return saveSequencePropsWithResult({
 					addedKeyframes: null,
 					movedKeyframes: null,
 					changes: [
@@ -400,32 +334,31 @@ const Value: React.FC<{
 					clientId,
 					undoLabel: `Update ${fieldLabel}`,
 					redoLabel: `Update ${fieldLabel} again`,
-				}),
-			)
+				});
+			})
 				.then((response) => {
 					if (response && !response.canUpdate)
 						throw new Error(
 							'The layer could not be updated. Try the edit again.',
 						);
 					preview.acknowledge(response);
+					retimingPreview.acknowledge(response);
 				})
 				.catch((error) => {
 					preview.fail();
+					retimingPreview.fail();
 					showNotification(
 						`Could not update ${fieldLabel}: ${error instanceof Error ? error.message : String(error)}`,
 						4000,
 					);
-				})
-				.finally(finishRetimingPreview);
+				});
 		},
 		[
 			clampTimingValue,
 			clearTimingLimits,
 			cancelActivePreview,
 			takePreview,
-			takeRetimingPreview,
-			dragOverridesRef,
-			clearEffectDragOverrides,
+			takePlaybackRatePreview,
 			propStatus,
 			clientId,
 			field.description,
@@ -447,53 +380,16 @@ const Value: React.FC<{
 			}
 
 			value = clampTimingValue(nodePath, field.key, value);
-			const keyframeChanges = getPlaybackRateChanges(value);
 			unstable_batchedUpdates(() => {
-				cancelRetimingPreview();
-				for (const preview of previewedKeyframes.current) {
-					if (preview.effectIndex !== null) {
-						clearEffectDragOverrides(preview.nodePath, preview.effectIndex);
-					}
-				}
-
-				previewedKeyframes.current = keyframeChanges?.previews ?? [];
+				previewPlaybackRate(value);
 				getPreview().setDragOverrides(
 					nodePath,
 					field.key,
 					Internals.makeStaticDragOverride(value),
 				);
-				for (const preview of previewedKeyframes.current) {
-					if (preview.effectIndex === null) {
-						getRetimingPreview().setDragOverrides(
-							preview.nodePath,
-							preview.fieldKey,
-							{
-								type: 'keyframed',
-								status: preview.status,
-							},
-						);
-					} else {
-						setEffectDragOverrides(
-							preview.nodePath,
-							preview.effectIndex,
-							preview.fieldKey,
-							{type: 'keyframed', status: preview.status},
-						);
-					}
-				}
 			});
 		},
-		[
-			cancelRetimingPreview,
-			getRetimingPreview,
-			getPreview,
-			clearEffectDragOverrides,
-			setEffectDragOverrides,
-			nodePath,
-			field.key,
-			getPlaybackRateChanges,
-			clampTimingValue,
-		],
+		[previewPlaybackRate, getPreview, nodePath, field.key, clampTimingValue],
 	);
 
 	const onDragEnd = useCallback<TimelineFieldOnDragEnd>(
@@ -807,6 +703,10 @@ export const TimelineSequencePropItem: React.FC<{
 		Internals.VisualModeDragOverridesContext,
 	);
 	const {takePreview: takeResetPreview} = useSequencePropPreview();
+	const {take: takeResetRetimingPreview} = usePlaybackRatePreview({
+		field,
+		nodePath,
+	});
 	const {previewServerState} = useContext(StudioServerConnectionCtx);
 	const {canOpenInEditor, defaultEditorId} = useEditorOpening(
 		previewServerState.type === 'connected',
@@ -915,20 +815,29 @@ export const TimelineSequencePropItem: React.FC<{
 			),
 		];
 		const preview = takeResetPreview();
+		const retiming = takeResetRetimingPreview(field.fieldSchema.default);
+		if (retiming === null) {
+			preview.cancel();
+			return;
+		}
+
 		for (const change of changes)
 			preview.setDragOverrides(
 				change.nodePath,
 				change.fieldKey,
 				Internals.makeStaticDragOverride(change.value),
 			);
-		saveSequencePropsWithResult({
-			addedKeyframes: null,
-			movedKeyframes: null,
-			changes,
-			setPropStatuses: preview.setPropStatuses,
-			clientId: previewServerState.clientId,
-			undoLabel: `Reset ${fieldLabel}`,
-			redoLabel: `Reapply ${fieldLabel}`,
+		unstable_batchedUpdates(() => {
+			retiming.commit();
+			return saveSequencePropsWithResult({
+				addedKeyframes: null,
+				movedKeyframes: null,
+				changes,
+				setPropStatuses: preview.setPropStatuses,
+				clientId: previewServerState.clientId,
+				undoLabel: `Reset ${fieldLabel}`,
+				redoLabel: `Reapply ${fieldLabel}`,
+			});
 		})
 			.then((response) => {
 				if (response && !response.canUpdate)
@@ -936,9 +845,11 @@ export const TimelineSequencePropItem: React.FC<{
 						'The layer could not be updated. Try the edit again.',
 					);
 				preview.acknowledge(response);
+				retiming.preview.acknowledge(response);
 			})
 			.catch((error) => {
 				preview.fail();
+				retiming.preview.fail();
 				showNotification(
 					`Could not reset ${fieldLabel}: ${error instanceof Error ? error.message : String(error)}`,
 					4000,
@@ -954,6 +865,7 @@ export const TimelineSequencePropItem: React.FC<{
 		previewServerState,
 		schema,
 		takeResetPreview,
+		takeResetRetimingPreview,
 		validatedLocation.source,
 		propStatus,
 	]);

@@ -19,6 +19,7 @@ type Layer = {
 	optimisticStatus: CanUpdateSequencePropSource | null;
 	savedStatus: CanUpdateSequencePropSource | null;
 	acknowledged: boolean;
+	allowEquivalentSource: boolean;
 };
 type Field = {
 	nodePath: SequencePropsSubscriptionKey;
@@ -113,13 +114,13 @@ const reconcileField = (store: Store, field: Field) => {
 		if (!layer.acknowledged) return false;
 		if (deepEqual(layer.savedStatus, field.sourceStatus)) return true;
 		if (
-			field.effectIndex === null ||
+			!layer.allowEquivalentSource ||
 			layer.savedStatus?.status !== 'keyframed' ||
 			field.sourceStatus?.status !== 'keyframed'
 		)
 			return false;
-		// Effect moves do not return their parsed statuses. Compare their
-		// evaluated animation while allowing the codemod to preserve an
+		// Changes to descendant animations and effects may not return parsed
+		// statuses. Compare their animation while allowing the codemod to preserve an
 		// equivalent source expression. The authoritative source stays intact.
 		const evaluated = Internals.evaluateSourcePropStatuses(
 			{saved: layer.savedStatus, source: field.sourceStatus},
@@ -231,7 +232,7 @@ export const createCanvasDragPreview = ({
 	let indexedRemapRevision = -1;
 	let ended = false;
 	const effectWriters = new Map<number, Setters['updateDragOverrides']>();
-	const restoreStatuses = (
+	const publishStatuses = (
 		updates: Parameters<Setters['setPropStatusesBatch']>[0],
 	) => {
 		if (updates.length === 0) return;
@@ -284,7 +285,7 @@ export const createCanvasDragPreview = ({
 				);
 		}
 
-		restoreStatuses(restorations);
+		publishStatuses(restorations);
 	};
 
 	const setDragOverrides = ({
@@ -332,6 +333,7 @@ export const createCanvasDragPreview = ({
 				optimisticStatus: null,
 				savedStatus: null,
 				acknowledged: false,
+				allowEquivalentSource: false,
 			};
 			owned.set(field, layer);
 			if (!originalNodes.has(originalNodeKey))
@@ -348,6 +350,61 @@ export const createCanvasDragPreview = ({
 		}
 
 		publishField(field, true, publishUpdate);
+	};
+
+	const setOwnedPropStatuses = (
+		nodePath: SequencePropsSubscriptionKey,
+		apply: Parameters<SetPropStatuses>[1],
+		write: SetPropStatuses,
+	) => {
+		if (ended) return;
+		const key = Internals.makeSequencePropsSubscriptionKey(nodePath);
+		if (
+			indexedOwnedSize !== owned.size ||
+			indexedRemapRevision !== store.remapRevision
+		) {
+			ownedByNode.clear();
+			for (const entry of owned) {
+				const nodeKey = Internals.makeSequencePropsSubscriptionKey(
+					entry[0].nodePath,
+				);
+				const fields = ownedByNode.get(nodeKey) ?? [];
+				fields.push(entry);
+				ownedByNode.set(nodeKey, fields);
+			}
+
+			indexedOwnedSize = owned.size;
+			indexedRemapRevision = store.remapRevision;
+		}
+
+		const matching = (ownedByNode.get(key) ?? []).filter(([field, layer]) =>
+			field.layers.includes(layer),
+		);
+		if (matching.length === 0) return;
+		write(nodePath, (previous) => {
+			if (!matching.some(([field, layer]) => field.layers.includes(layer)))
+				return previous;
+			const next = apply(previous);
+			if (next.canUpdate) {
+				for (const [field, layer] of matching) {
+					if (
+						!field.layers.includes(layer) ||
+						Internals.makeSequencePropsSubscriptionKey(field.nodePath) !==
+							Internals.makeSequencePropsSubscriptionKey(nodePath)
+					)
+						continue;
+					layer.optimisticStatus = getFieldStatus(
+						next,
+						field.key,
+						field.effectIndex,
+					);
+					if (layer.optimisticStatus)
+						field.ownedStatuses.add(layer.optimisticStatus);
+				}
+			}
+
+			return next;
+		});
 	};
 
 	return {
@@ -421,55 +478,22 @@ export const createCanvasDragPreview = ({
 			if (updates.length > 0) updateBatch(updates);
 		},
 		setPropStatuses: ((nodePath, apply) => {
-			if (ended) return;
-			const key = Internals.makeSequencePropsSubscriptionKey(nodePath);
-			if (
-				indexedOwnedSize !== owned.size ||
-				indexedRemapRevision !== store.remapRevision
-			) {
-				ownedByNode.clear();
-				for (const entry of owned) {
-					const nodeKey = Internals.makeSequencePropsSubscriptionKey(
-						entry[0].nodePath,
-					);
-					const fields = ownedByNode.get(nodeKey) ?? [];
-					fields.push(entry);
-					ownedByNode.set(nodeKey, fields);
-				}
-
-				indexedOwnedSize = owned.size;
-				indexedRemapRevision = store.remapRevision;
+			setOwnedPropStatuses(nodePath, apply, setPropStatuses);
+		}) satisfies SetPropStatuses,
+		setPropStatusesBatch: (
+			updates: Parameters<Setters['setPropStatusesBatch']>[0],
+		) => {
+			const ownedUpdates: Parameters<
+				Setters['setPropStatusesBatch']
+			>[0][number][] = [];
+			for (const {nodePath, update} of updates) {
+				setOwnedPropStatuses(nodePath, update, (path, apply) => {
+					ownedUpdates.push({nodePath: path, update: apply});
+				});
 			}
 
-			const matching = (ownedByNode.get(key) ?? []).filter(([field, layer]) =>
-				field.layers.includes(layer),
-			);
-			if (matching.length === 0) return;
-			setPropStatuses(nodePath, (previous) => {
-				if (!matching.some(([field, layer]) => field.layers.includes(layer)))
-					return previous;
-				const next = apply(previous);
-				if (next.canUpdate) {
-					for (const [field, layer] of matching) {
-						if (
-							!field.layers.includes(layer) ||
-							Internals.makeSequencePropsSubscriptionKey(field.nodePath) !==
-								Internals.makeSequencePropsSubscriptionKey(nodePath)
-						)
-							continue;
-						layer.optimisticStatus = getFieldStatus(
-							next,
-							field.key,
-							field.effectIndex,
-						);
-						if (layer.optimisticStatus)
-							field.ownedStatuses.add(layer.optimisticStatus);
-					}
-				}
-
-				return next;
-			});
-		}) satisfies SetPropStatuses,
+			publishStatuses(ownedUpdates);
+		},
 		cancel: remove,
 		fail: remove,
 		acknowledge: (response: SaveSequencePropsResponse | null) => {
@@ -494,15 +518,17 @@ export const createCanvasDragPreview = ({
 					Internals.makeSequencePropsSubscriptionKey(field.nodePath),
 				);
 				layer.acknowledged = true;
-				layer.savedStatus =
-					(field.effectIndex === null ? result?.props[field.key] : null) ??
-					layer.optimisticStatus;
+				const savedStatus =
+					field.effectIndex === null ? result?.props[field.key] : null;
+				layer.allowEquivalentSource =
+					savedStatus === null || savedStatus === undefined;
+				layer.savedStatus = savedStatus ?? layer.optimisticStatus;
 				reconcileField(store, field);
 				if (!field.layers.includes(layer))
 					restorations.push(getFieldStatusRestoration(field));
 			}
 
-			restoreStatuses(restorations);
+			publishStatuses(restorations);
 		},
 	};
 };
