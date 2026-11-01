@@ -3,6 +3,7 @@ import {Internals} from 'remotion';
 import {BLUE, TRANSPARENT} from '../helpers/colors';
 import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-cancelable-pointer-session';
 import {isPointerSessionRelease} from '../helpers/pointer-session';
+import {createCanvasDragPreview} from './canvas-drag-preview';
 import {
 	forceSpecificCursor,
 	stopForcingSpecificCursor,
@@ -31,7 +32,7 @@ import {
 import {getUvCoordinateForPoint} from './selected-outline-uv';
 import {commitPendingInspectorFields} from './Timeline/focus-inspector-field';
 import {resolveKeyframeSourceFrame} from './Timeline/get-timeline-keyframes';
-import {saveSequenceProps} from './Timeline/save-sequence-prop';
+import {saveSequencePropsWithResult} from './Timeline/save-sequence-prop';
 
 const CROP_HANDLE_THICKNESS = 5;
 const CROP_HANDLE_LENGTH = 20;
@@ -200,8 +201,11 @@ const CropHandle: React.FC<{
 	readonly onDraggingChange: (dragging: boolean) => void;
 	readonly target: SelectedOutlineTarget;
 }> = ({handle, outline, onDraggingChange, target}) => {
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
+	const {setPropStatuses, updateDragOverrides} = useContext(
 		Internals.VisualModeSettersContext,
+	);
+	const propStatusesRef = useContext(
+		Internals.VisualModePropStatusesRefContext,
 	);
 	const {cropDrag} = target;
 	const cursor = cursorForHandle(handle);
@@ -230,6 +234,14 @@ const CropHandle: React.FC<{
 			const svgRect = svg.getBoundingClientRect();
 			const uncroppedPoints = outline.uncroppedPoints ?? outline.points;
 			const initialValues = getCropValues(cropDrag);
+			const preview = createCanvasDragPreview({
+				updateDragOverrides,
+				setPropStatuses,
+				getPropStatuses: (nodePath) =>
+					propStatusesRef.current[
+						Internals.makeSequencePropsSubscriptionKey(nodePath)
+					],
+			});
 			let lastValues = initialValues;
 			let dragStarted = false;
 
@@ -265,7 +277,7 @@ const CropHandle: React.FC<{
 						continue;
 					}
 
-					setDragOverrides(
+					preview.setDragOverrides(
 						cropDrag.nodePath,
 						fieldKey,
 						field.propStatus.status === 'keyframed'
@@ -282,7 +294,7 @@ const CropHandle: React.FC<{
 				}
 
 				if (transformOrigin !== null) {
-					setDragOverrides(
+					preview.setDragOverrides(
 						cropDrag.nodePath,
 						transformOriginFieldKey,
 						Internals.makeStaticDragOverride(transformOrigin),
@@ -297,7 +309,7 @@ const CropHandle: React.FC<{
 				}
 
 				if (!commit) {
-					clearDragOverrides(cropDrag.nodePath);
+					preview.cancel();
 					return;
 				}
 
@@ -306,34 +318,55 @@ const CropHandle: React.FC<{
 					target: cropDrag,
 					values: lastValues,
 				});
-				const staticChanges = changes.filter(
+				const changesToSave: (
+					| SelectedOutlineStaticDragChange
+					| SelectedOutlineKeyframedDragChange
+				)[] = [];
+				for (const change of changes) {
+					const nodePath = preview.getNodePath(change.nodePath);
+					if (nodePath === null) {
+						preview.cancel();
+						return;
+					}
+
+					changesToSave.push({...change, nodePath});
+				}
+
+				const staticChanges = changesToSave.filter(
 					(change): change is SelectedOutlineStaticDragChange =>
 						change.type === 'static',
 				);
-				const keyframedChanges = changes.filter(
+				const keyframedChanges = changesToSave.filter(
 					(change): change is SelectedOutlineKeyframedDragChange =>
 						change.type === 'keyframed',
 				);
 
-				saveSequenceProps({
+				saveSequencePropsWithResult({
 					changes: staticChanges,
 					addedKeyframes: keyframedChanges,
 					movedKeyframes: null,
-					setPropStatuses,
+					setPropStatuses: preview.setPropStatuses,
 					clientId: cropDrag.clientId,
 					undoLabel: 'Crop sequence',
 					redoLabel: 'Crop sequence back',
 				})
+					.then((response) => {
+						if (response && !response.canUpdate) {
+							throw new Error(
+								'The layer could not be updated. Try the edit again.',
+							);
+						}
+
+						preview.acknowledge(response);
+					})
 					.catch((err) => {
+						preview.fail();
 						showNotification(
 							`Could not save crop: ${
 								err instanceof Error ? err.message : String(err)
 							}`,
 							4000,
 						);
-					})
-					.finally(() => {
-						clearDragOverrides(cropDrag.nodePath);
 					});
 			};
 
@@ -347,7 +380,6 @@ const CropHandle: React.FC<{
 			});
 		},
 		[
-			clearDragOverrides,
 			cropDrag,
 			cursor,
 			handle,
@@ -355,7 +387,8 @@ const CropHandle: React.FC<{
 			outline.dimensions,
 			outline.points,
 			outline.uncroppedPoints,
-			setDragOverrides,
+			updateDragOverrides,
+			propStatusesRef,
 			setPropStatuses,
 		],
 	);

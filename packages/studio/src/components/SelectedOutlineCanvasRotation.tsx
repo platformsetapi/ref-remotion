@@ -5,6 +5,7 @@ import {startEscapeCancelableCapturedPointerSession} from '../helpers/escape-can
 import {isMac} from '../helpers/is-mac';
 import {isPointerSessionRelease} from '../helpers/pointer-session';
 import {EditorSnappingContext} from '../state/editor-snapping';
+import {createCanvasDragPreview} from './canvas-drag-preview';
 import {canvasRotationCursor} from './canvas-rotation-cursor';
 import {
 	forceSpecificCursor,
@@ -12,7 +13,6 @@ import {
 } from './ForceSpecificCursor';
 import {showNotification} from './Notifications/NotificationCenter';
 import {
-	clearSelectedOutlineDragOverrides,
 	getSelectedOutline3DRotationDragValues,
 	getSelectedOutlineRotationDragChanges,
 	getSelectedOutlineRotationDragStates,
@@ -37,7 +37,7 @@ import {
 import {svgPointToClientPoint} from './svg-point-to-client-point';
 import {commitPendingInspectorFields} from './Timeline/focus-inspector-field';
 import {getCurrentFrame} from './Timeline/imperative-state';
-import {saveSequenceProps} from './Timeline/save-sequence-prop';
+import {saveSequencePropsWithResult} from './Timeline/save-sequence-prop';
 
 const rotationDegreesPerPixel = 0.5;
 const canvas2DRotationCursor = getRotationCursor(0);
@@ -60,8 +60,11 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 	const dragOverridesRef = useContext(
 		Internals.VisualModeDragOverridesRefContext,
 	);
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
+	const {setPropStatuses, updateDragOverrides} = useContext(
 		Internals.VisualModeSettersContext,
+	);
+	const propStatusesRef = useContext(
+		Internals.VisualModePropStatusesRefContext,
 	);
 	const {editorSnapping} = useContext(EditorSnappingContext);
 	const [commandKeyPressed, setCommandKeyPressed] = React.useState(false);
@@ -136,6 +139,14 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 				}),
 				svg.getBoundingClientRect(),
 			);
+			const preview = createCanvasDragPreview({
+				updateDragOverrides,
+				setPropStatuses,
+				getPropStatuses: (nodePath) =>
+					propStatusesRef.current[
+						Internals.makeSequencePropsSubscriptionKey(nodePath)
+					],
+			});
 			const dragStates = getSelectedOutlineRotationDragStates({
 				dragTargets: [rotationDrag],
 				getDragOverrides: dragOverridesRef.current.getDragOverrides,
@@ -213,7 +224,7 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 					}
 
 					if (dragState.target.propStatus.status === 'keyframed') {
-						setDragOverrides(
+						preview.setDragOverrides(
 							dragState.target.nodePath,
 							rotateFieldKey,
 							Internals.makeKeyframedDragOverride({
@@ -223,7 +234,7 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 							}),
 						);
 					} else {
-						setDragOverrides(
+						preview.setDragOverrides(
 							dragState.target.nodePath,
 							rotateFieldKey,
 							Internals.makeStaticDragOverride(value),
@@ -244,44 +255,59 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 					lastValues,
 				});
 				if (!commit || changes.length === 0) {
-					clearSelectedOutlineDragOverrides({
-						clearDragOverrides,
-						dragStates,
-					});
+					preview.cancel();
 					return;
 				}
 
-				const staticChanges = changes.filter(
+				const changesToSave: (
+					| SelectedOutlineStaticDragChange
+					| SelectedOutlineKeyframedDragChange
+				)[] = [];
+				for (const change of changes) {
+					const nodePath = preview.getNodePath(change.nodePath);
+					if (nodePath === null) {
+						preview.cancel();
+						return;
+					}
+
+					changesToSave.push({...change, nodePath});
+				}
+
+				const staticChanges = changesToSave.filter(
 					(change): change is SelectedOutlineStaticDragChange =>
 						change.type === 'static',
 				);
-				const keyframedChanges = changes.filter(
+				const keyframedChanges = changesToSave.filter(
 					(change): change is SelectedOutlineKeyframedDragChange =>
 						change.type === 'keyframed',
 				);
 
-				saveSequenceProps({
+				saveSequencePropsWithResult({
 					changes: staticChanges,
 					addedKeyframes: keyframedChanges,
 					movedKeyframes: null,
-					setPropStatuses,
+					setPropStatuses: preview.setPropStatuses,
 					clientId: rotationDrag.clientId,
 					undoLabel: 'Rotate sequence',
 					redoLabel: 'Rotate sequence back',
 				})
+					.then((response) => {
+						if (response && !response.canUpdate) {
+							throw new Error(
+								'The layer could not be updated. Try the edit again.',
+							);
+						}
+
+						preview.acknowledge(response);
+					})
 					.catch((error) => {
+						preview.fail();
 						showNotification(
 							`Could not save sequence props: ${
 								error instanceof Error ? error.message : String(error)
 							}`,
 							4000,
 						);
-					})
-					.finally(() => {
-						clearSelectedOutlineDragOverrides({
-							clearDragOverrides,
-							dragStates,
-						});
 					});
 			};
 
@@ -297,7 +323,6 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 			});
 		},
 		[
-			clearDragOverrides,
 			editorSnapping,
 			dragOverridesRef,
 			getLatestTargetByKey,
@@ -306,7 +331,8 @@ export const SelectedOutlineCanvasRotation: React.FC<{
 			outline.dimensions,
 			outline.points,
 			outline.uncroppedPoints,
-			setDragOverrides,
+			updateDragOverrides,
+			propStatusesRef,
 			setPropStatuses,
 		],
 	);

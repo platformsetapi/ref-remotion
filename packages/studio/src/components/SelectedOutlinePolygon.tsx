@@ -13,6 +13,7 @@ import {isStudioInteractivityEnabled} from '../helpers/interactivity-enabled';
 import {isMac} from '../helpers/is-mac';
 import {EditorShowGuidesContext} from '../state/editor-guides';
 import {EditorSnappingContext} from '../state/editor-snapping';
+import {createCanvasDragPreview} from './canvas-drag-preview';
 import {
 	addEffectFromDrop,
 	hasEffectDragType,
@@ -25,7 +26,6 @@ import {
 } from './ForceSpecificCursor';
 import {showNotification} from './Notifications/NotificationCenter';
 import {
-	clearSelectedOutlineDragOverrides,
 	type SelectedOutlineKeyframedDragChange,
 	type SelectedOutlineStaticDragChange,
 } from './selected-outline-drag';
@@ -41,7 +41,7 @@ import type {
 } from './selected-outline-types';
 import {commitPendingInspectorFields} from './Timeline/focus-inspector-field';
 import {getCurrentFrame} from './Timeline/imperative-state';
-import {saveSequenceProps} from './Timeline/save-sequence-prop';
+import {saveSequencePropsWithResult} from './Timeline/save-sequence-prop';
 import {PREVENT_CLEAR_SELECTION_ON_POINTER_DOWN_ATTR} from './Timeline/should-clear-selection-on-pointer-down';
 import type {
 	TimelineSelection,
@@ -123,8 +123,11 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 	const dragOverridesRef = useContext(
 		Internals.VisualModeDragOverridesRefContext,
 	);
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
+	const {setPropStatuses, updateDragOverrides} = useContext(
 		Internals.VisualModeSettersContext,
+	);
+	const propStatusesRef = useContext(
+		Internals.VisualModePropStatusesRefContext,
 	);
 	const {editorSnapping} = useContext(EditorSnappingContext);
 	const {editorShowGuides, guidesList} = useContext(EditorShowGuidesContext);
@@ -236,6 +239,14 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 
 			const [{clientId}] = dragTargets;
 			stopPointerSessionRef.current?.();
+			const preview = createCanvasDragPreview({
+				updateDragOverrides,
+				setPropStatuses,
+				getPropStatuses: (nodePath) =>
+					propStatusesRef.current[
+						Internals.makeSequencePropsSubscriptionKey(nodePath)
+					],
+			});
 			stopPointerSessionRef.current = startEscapeCancelableSession((onEnd) =>
 				startCanvasOutlineTranslateDrag({
 					event,
@@ -269,13 +280,13 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 								modifierDisablesSnapping: !temporaryTranslate,
 							}
 						: null,
-					setDragOverrides,
-					clearDragOverrides,
+					setDragOverrides: preview.setDragOverrides,
+					clearDragOverrides: preview.cancel,
 					onDragStart: () => {
 						onDraggingChange(true);
 						forceSpecificCursor('default');
 					},
-					onDragEnd: ({changes, dragged, released, session}) => {
+					onDragEnd: ({changes, dragged, released}) => {
 						onEnd();
 						stopPointerSessionRef.current = null;
 						dragAwareDoubleClick.endPointerGesture(dragged);
@@ -285,14 +296,12 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 						}
 
 						if (!released) {
-							clearSelectedOutlineDragOverrides({
-								clearDragOverrides,
-								dragStates: session.dragStates,
-							});
+							preview.cancel();
 							return;
 						}
 
 						if (changes.length === 0) {
+							preview.cancel();
 							if (deferSelection && !dragged && released) {
 								onSelect(target.selection, interaction);
 							}
@@ -300,20 +309,29 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 							return;
 						}
 
-						const staticChanges = changes.filter(
+						const currentChanges = changes.flatMap((change) => {
+							const nodePath = preview.getNodePath(change.nodePath);
+							return nodePath === null ? [] : [{...change, nodePath}];
+						});
+						if (currentChanges.length !== changes.length) {
+							preview.cancel();
+							return;
+						}
+
+						const staticChanges = currentChanges.filter(
 							(change): change is SelectedOutlineStaticDragChange =>
 								change.type === 'static',
 						);
-						const keyframedChanges = changes.filter(
+						const keyframedChanges = currentChanges.filter(
 							(change): change is SelectedOutlineKeyframedDragChange =>
 								change.type === 'keyframed',
 						);
 
-						saveSequenceProps({
+						saveSequencePropsWithResult({
 							changes: staticChanges,
 							addedKeyframes: keyframedChanges,
 							movedKeyframes: null,
-							setPropStatuses,
+							setPropStatuses: preview.setPropStatuses,
 							clientId,
 							undoLabel:
 								changes.length > 1
@@ -324,19 +342,21 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 									? 'Move selected sequences back'
 									: 'Move sequence back',
 						})
+							.then((response) => {
+								if (response && !response.canUpdate)
+									throw new Error(
+										'The layer could not be updated. Try the edit again.',
+									);
+								preview.acknowledge(response);
+							})
 							.catch((err) => {
+								preview.fail();
 								showNotification(
 									`Could not save sequence props: ${
 										err instanceof Error ? err.message : String(err)
 									}`,
 									4000,
 								);
-							})
-							.finally(() => {
-								clearSelectedOutlineDragOverrides({
-									clearDragOverrides,
-									dragStates: session.dragStates,
-								});
 							});
 					},
 				}),
@@ -344,7 +364,6 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 		},
 		[
 			canvasContent,
-			clearDragOverrides,
 			compositionHeight,
 			compositionWidth,
 			containsSelection,
@@ -362,7 +381,8 @@ const SelectedOutlinePolygonUnmemoized: React.FC<{
 			outline,
 			scale,
 			setPropStatuses,
-			setDragOverrides,
+			updateDragOverrides,
+			propStatusesRef,
 			translateWithCommandKey,
 		],
 	);

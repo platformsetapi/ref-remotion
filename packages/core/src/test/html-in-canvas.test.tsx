@@ -162,6 +162,8 @@ const SequenceTestWrapper: React.FC<{
 			remapPropStatuses: () => undefined,
 			setPropStatuses: () => undefined,
 			setDragOverrides: () => undefined,
+			updateDragOverrides: () => undefined,
+			remapDragOverrideFields: () => undefined,
 			setEffectDragOverrides: () => undefined,
 		}),
 		[],
