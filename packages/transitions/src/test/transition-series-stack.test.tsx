@@ -41,6 +41,7 @@ const compositionManagerContext = makeMockCompositionManagerContext();
 const visualModeSetters = {
 	setDragOverrides: () => undefined,
 	updateDragOverrides: () => undefined,
+	updateDragOverridesBatch: () => undefined,
 	remapDragOverrideFields: () => undefined,
 	clearDragOverrides: () => undefined,
 	setEffectDragOverrides: () => undefined,

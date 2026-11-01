@@ -30,6 +30,7 @@ type Field = {
 };
 type Store = {
 	fields: Map<string, Field>;
+	remapRevision: number;
 };
 const stores = new WeakMap<Setters['updateDragOverrides'], Store>();
 const fieldKey = (nodePath: SequencePropsSubscriptionKey, key: string) =>
@@ -111,12 +112,15 @@ export const createCanvasDragPreview = ({
 }) => {
 	let store = stores.get(updateDragOverrides);
 	if (!store) {
-		store = {fields: new Map()};
+		store = {fields: new Map(), remapRevision: 0};
 		stores.set(updateDragOverrides, store);
 	}
 
 	const owned = new Map<Field, Layer>();
 	const originalNodes = new Map<string, {field: Field; layer: Layer}>();
+	const ownedByNode = new Map<string, [Field, Layer][]>();
+	let indexedOwnedSize = -1;
+	let indexedRemapRevision = -1;
 	let ended = false;
 	const getNodePath = (nodePath: SequencePropsSubscriptionKey) => {
 		const original = originalNodes.get(
@@ -159,65 +163,107 @@ export const createCanvasDragPreview = ({
 		}
 	};
 
+	const setDragOverrides = (
+		nodePath: SequencePropsSubscriptionKey,
+		key: string,
+		value: DragOverrideValue,
+		update: Setters['updateDragOverrides'],
+	) => {
+		if (ended) return;
+		const originalNodeKey =
+			Internals.makeSequencePropsSubscriptionKey(nodePath);
+		const currentNodePath = getNodePath(nodePath);
+		if (currentNodePath === null) return;
+		nodePath = currentNodePath;
+		const mapKey = fieldKey(nodePath, key);
+		let field = store.fields.get(mapKey);
+		if (!field) {
+			const status = getPropStatuses(nodePath);
+			field = {
+				nodePath,
+				key,
+				layers: [],
+				visible: null,
+				sourceStatus: status?.canUpdate ? (status.props[key] ?? null) : null,
+				ownedStatuses: new Set(),
+			};
+			store.fields.set(mapKey, field);
+		}
+
+		let layer = owned.get(field);
+		if (!layer) {
+			layer = {
+				value,
+				optimisticStatus: null,
+				savedStatus: null,
+				acknowledged: false,
+			};
+			owned.set(field, layer);
+			if (!originalNodes.has(originalNodeKey))
+				originalNodes.set(originalNodeKey, {field, layer});
+			field.layers.push(layer);
+		} else {
+			if (
+				layer.value.type === 'static' &&
+				value.type === 'static' &&
+				Object.is(layer.value.value, value.value)
+			)
+				return;
+			layer.value = value;
+		}
+
+		publishField(update, field, true);
+	};
+
 	return {
 		getNodePath,
 		setDragOverrides: (
 			nodePath: SequencePropsSubscriptionKey,
 			key: string,
 			value: DragOverrideValue,
+		) => setDragOverrides(nodePath, key, value, updateDragOverrides),
+		setDragOverridesBatch: (
+			values: readonly {
+				nodePath: SequencePropsSubscriptionKey;
+				key: string;
+				value: DragOverrideValue;
+			}[],
+			updateBatch: Setters['updateDragOverridesBatch'],
 		) => {
-			if (ended) return;
-			const originalNodeKey =
-				Internals.makeSequencePropsSubscriptionKey(nodePath);
-			const currentNodePath = getNodePath(nodePath);
-			if (currentNodePath === null) return;
-			nodePath = currentNodePath;
-			const mapKey = fieldKey(nodePath, key);
-			let field = store.fields.get(mapKey);
-			if (!field) {
-				const status = getPropStatuses(nodePath);
-				field = {
-					nodePath,
-					key,
-					layers: [],
-					visible: null,
-					sourceStatus: status?.canUpdate ? (status.props[key] ?? null) : null,
-					ownedStatuses: new Set(),
-				};
-				store.fields.set(mapKey, field);
-			}
+			const updates: Parameters<
+				Setters['updateDragOverridesBatch']
+			>[0][number][] = [];
+			const collect: Setters['updateDragOverrides'] = (nodePath, update) => {
+				updates.push({nodePath, update});
+			};
 
-			let layer = owned.get(field);
-			if (!layer) {
-				layer = {
-					value,
-					optimisticStatus: null,
-					savedStatus: null,
-					acknowledged: false,
-				};
-				owned.set(field, layer);
-				if (!originalNodes.has(originalNodeKey))
-					originalNodes.set(originalNodeKey, {field, layer});
-				field.layers.push(layer);
-			} else {
-				if (
-					layer.value.type === 'static' &&
-					value.type === 'static' &&
-					Object.is(layer.value.value, value.value)
-				)
-					return;
-				layer.value = value;
-			}
-
-			publishField(updateDragOverrides, field, true);
+			for (const value of values)
+				setDragOverrides(value.nodePath, value.key, value.value, collect);
+			if (updates.length > 0) updateBatch(updates);
 		},
 		setPropStatuses: ((nodePath, apply) => {
 			if (ended) return;
 			const key = Internals.makeSequencePropsSubscriptionKey(nodePath);
-			const matching = [...owned].filter(
-				([field, layer]) =>
-					field.layers.includes(layer) &&
-					Internals.makeSequencePropsSubscriptionKey(field.nodePath) === key,
+			if (
+				indexedOwnedSize !== owned.size ||
+				indexedRemapRevision !== store.remapRevision
+			) {
+				ownedByNode.clear();
+				for (const entry of owned) {
+					const nodeKey = Internals.makeSequencePropsSubscriptionKey(
+						entry[0].nodePath,
+					);
+					const fields = ownedByNode.get(nodeKey) ?? [];
+					fields.push(entry);
+					ownedByNode.set(nodeKey, fields);
+				}
+
+				indexedOwnedSize = owned.size;
+				indexedRemapRevision = store.remapRevision;
+			}
+
+			const matching = (ownedByNode.get(key) ?? []).filter(([field, layer]) =>
+				field.layers.includes(layer),
 			);
 			if (matching.length === 0) return;
 			setPropStatuses(nodePath, (previous) => {
@@ -250,12 +296,16 @@ export const createCanvasDragPreview = ({
 				return;
 			}
 
+			const results = new Map<string, (typeof response.results)[number]>();
+			for (const item of response.results) {
+				const key = Internals.makeSequencePropsSubscriptionKey(item.nodePath);
+				if (!results.has(key)) results.set(key, item);
+			}
+
 			for (const [field, layer] of owned) {
 				if (!field.layers.includes(layer)) continue;
-				const result = response.results.find(
-					(item) =>
-						Internals.makeSequencePropsSubscriptionKey(item.nodePath) ===
-						Internals.makeSequencePropsSubscriptionKey(field.nodePath),
+				const result = results.get(
+					Internals.makeSequencePropsSubscriptionKey(field.nodePath),
 				);
 				layer.acknowledged = true;
 				layer.savedStatus = result?.props[field.key] ?? layer.optimisticStatus;
@@ -299,6 +349,7 @@ export const remapCanvasDragPreviews = (
 				},
 			];
 		});
+		if (moves.length > 0) store.remapRevision++;
 		setters.remapDragOverrideFields(
 			moves.map((move) => ({
 				previousNodePath: move.previousNodePath,

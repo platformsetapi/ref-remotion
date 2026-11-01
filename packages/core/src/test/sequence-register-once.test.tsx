@@ -179,6 +179,7 @@ const SequenceTestWrapperWithVisualModeOverrides: React.FC<
 		() => ({
 			setDragOverrides: () => undefined,
 			updateDragOverrides: () => undefined,
+			updateDragOverridesBatch: () => undefined,
 			remapDragOverrideFields: () => undefined,
 			clearDragOverrides: () => undefined,
 			setEffectDragOverrides: () => undefined,
