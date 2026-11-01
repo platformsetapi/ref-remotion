@@ -17,7 +17,7 @@ Agents can:
 - See selectable items and select them
 - Duplicate sequences and inspect duplication progress
 - See available compositions and navigate to them
-- Inspect render jobs and cancel queued or running renders
+- Inspect render jobs, cancel queued or running renders, and reopen saved render settings
 - Read the error currently shown in the Studio error overlay
 - Get the current HTML of your composition
 - See current outlines of elements and their geometry
@@ -205,7 +205,7 @@ The output acknowledges the shutdown request; the connection closes as Studio sh
 
 ### `get_render_jobs`<AvailableFrom v="4.0.540" />
 
-Returns the server and browser render jobs shown in Studio, including pending cancellation. Transcription and background removal jobs are excluded. Available in all Studio modes; no composition needs to be open.
+Returns the server and browser render jobs shown in Studio, including pending cancellation and availability of saved render settings. Transcription and background removal jobs are excluded. Available in all Studio modes; no composition needs to be open.
 
 ```ts title="Input"
 {}
@@ -221,6 +221,8 @@ Returns the server and browser render jobs shown in Studio, including pending ca
     status: 'idle' | 'running' | 'saving' | 'done' | 'failed' | 'cancelled';
     cancelling: boolean;
     canCancel: boolean;
+    canRetry: boolean;
+    retryUnavailableReason: string | null;
     progress: number | null;
     error: string | null;
   }>;
@@ -259,6 +261,14 @@ Whether a cancellation request started in this Studio tab is pending. The job ma
 
 Whether the shared Studio cancellation action is currently available for this job. This is `false` while cancellation is pending or the job is no longer cancellable. Server renders require a connected Studio server; queued or running browser renders can be cancelled locally in all Studio modes.
 
+##### `canRetry`
+
+Whether `open_render_job_settings` can reopen this job’s saved settings. Requires a terminal job, its registered composition and the original rendering settings. Server jobs also require a connected interactive Studio.
+
+##### `retryUnavailableReason`
+
+The reason saved settings cannot currently be reopened, or `null` when `canRetry` is `true`.
+
 ##### `progress`
 
 The current render progress from `0` to `1`. Queued jobs report `0` and completed jobs report `1`. `null` means no progress value is available, including failed, cancelled and browser-saving jobs.
@@ -266,6 +276,51 @@ The current render progress from `0` to `1`. Queued jobs report `0` and complete
 ##### `error`
 
 The failure message for a `failed` job, otherwise `null`.
+
+### `open_render_job_settings`<AvailableFrom v="4.0.540" />
+
+Opens the same prefilled render dialog as Studio's Retry control for a completed, failed or cancelled job. It restores the job's output name, render type and saved rendering settings. Opening the dialog does not enqueue or start a render; rendering starts only when you submit it. The render uses the current composition code.
+
+If this job's dialog is already open, its unsaved changes are preserved. Opening a different job replaces the dialog with that job's saved settings.
+
+Server render settings require a connected interactive Studio. Browser render settings can reopen locally in all four Studio modes. The composition must still be registered, and the original settings must be available. Browser renders restored after a page reload only retain output information, so their settings cannot be reopened. Read `canRetry` and `retryUnavailableReason` from `get_render_jobs` before calling this tool.
+
+```ts title="Input"
+{
+  jobId: string;
+}
+```
+
+#### `jobId`
+
+Required. A non-empty job identifier returned by `get_render_jobs`.
+
+```ts title="Output"
+{jobId: string} & (
+  | {status: 'opened'; renderMode: 'server' | 'browser'; outputName: string}
+  | {status: 'not-found' | 'not-retryable' | 'unavailable' | 'error'; reason: string}
+)
+```
+
+#### `status`
+
+`opened` means the prefilled settings dialog opened. No render was started.
+
+`not-found` means the job is no longer in the queue. `not-retryable` means it is still queued, running or saving. `unavailable` means the Studio mode, missing composition or unavailable original settings prevent reopening the dialog. These results leave the current dialog unchanged.
+
+`error` means preparing the saved settings failed. Invalid input rejects the tool call before opening a dialog.
+
+#### `renderMode`
+
+The opened dialog's rendering mode, present when `status` is `opened`.
+
+#### `outputName`
+
+The job's original output filename or image-sequence directory, present when `status` is `opened`. This identifies the saved job; an already-open dialog may contain an edited output name.
+
+#### `reason`
+
+The reason the dialog could not be opened, present for every result except `opened`. Studio shows the same message when its Retry action cannot proceed. Environment variables and input props are not included in the tool output.
 
 ### `cancel_render_job`<AvailableFrom v="4.0.540" />
 

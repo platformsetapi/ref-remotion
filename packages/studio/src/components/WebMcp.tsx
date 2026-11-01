@@ -57,6 +57,7 @@ import {
 	RenderQueueActionsContext,
 	RenderQueueContext,
 } from './RenderQueue/context';
+import {useRenderJobRetry} from './RenderQueue/render-retry';
 import {measureOutlineTargets} from './selected-outline-measurement';
 import {
 	deleteEffectsFromSource,
@@ -282,6 +283,7 @@ export const WebMcp: FC = () => {
 	compactSeriesRef.current = compactSeries;
 	const {addCaptionJob, addVideoMattingJob} = useContext(RenderQueueContext);
 	const renderQueueActions = useContext(RenderQueueActionsContext);
+	const renderJobRetry = useRenderJobRetry();
 	const staticFiles = useStaticFiles();
 	const timelineSelectionRef = useCurrentTimelineSelectionStateAsRef();
 	const currentSelectionRef = useRef<string | null>(null);
@@ -840,7 +842,7 @@ export const WebMcp: FC = () => {
 					name: 'get_render_jobs',
 					title: 'Get Studio render jobs',
 					description:
-						'Read the server and browser render jobs currently shown in Studio, including progress, cancellation availability, and pending cancellation. Excludes transcription and background removal jobs. Reading jobs is available in all Studio modes.',
+						'Read the server and browser render jobs currently shown in Studio, including progress, cancellation availability, pending cancellation, and whether the saved render settings can be reopened. Excludes transcription and background removal jobs. Reading jobs is available in all Studio modes.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -849,26 +851,63 @@ export const WebMcp: FC = () => {
 					annotations: {readOnlyHint: true},
 					execute: () => {
 						return Promise.resolve({
-							jobs: renderQueueActions.getJobs().map((job) => ({
-								id: job.id,
-								type: job.type,
-								compositionId: job.compositionId,
-								outputName: job.outName,
-								status: job.status,
-								cancelling: renderQueueActions.isCancelling(job.id),
-								canCancel: renderQueueActions.canCancelJob(job.id),
-								progress:
-									job.status === 'done'
-										? 1
-										: job.status === 'idle'
-											? 0
-											: job.status === 'running'
-												? isClientRenderJob(job)
-													? job.progress.progress
-													: job.progress.value
-												: null,
-								error: job.status === 'failed' ? job.error.message : null,
-							})),
+							jobs: renderQueueActions.getJobs().map((job) => {
+								const retryState = renderJobRetry.getRetryState(job.id);
+								return {
+									id: job.id,
+									type: job.type,
+									compositionId: job.compositionId,
+									outputName: job.outName,
+									status: job.status,
+									cancelling: renderQueueActions.isCancelling(job.id),
+									canCancel: renderQueueActions.canCancelJob(job.id),
+									canRetry: retryState.canRetry,
+									retryUnavailableReason: retryState.reason,
+									progress:
+										job.status === 'done'
+											? 1
+											: job.status === 'idle'
+												? 0
+												: job.status === 'running'
+													? isClientRenderJob(job)
+														? job.progress.progress
+														: job.progress.value
+													: null,
+									error: job.status === 'failed' ? job.error.message : null,
+								};
+							}),
+						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'open_render_job_settings',
+					title: 'Open Studio render job settings',
+					description:
+						'Open the same prefilled render dialog as Studio Retry for a completed, failed, or cancelled render job, without starting a render. Uses the job’s saved settings, or preserves unsaved edits if this job’s dialog is already open. The returned outputName identifies the saved job. Read canRetry and retryUnavailableReason from get_render_jobs first. Server settings require a connected interactive Studio; browser render settings can reopen locally in all modes when the original settings and composition are available.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							jobId: {
+								type: 'string',
+								minLength: 1,
+								description: 'The render job id returned by get_render_jobs.',
+							},
+						},
+						required: ['jobId'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: ({jobId}) => {
+						if (typeof jobId !== 'string' || jobId.length === 0) {
+							throw new Error('jobId must be a non-empty string.');
+						}
+
+						return Promise.resolve({
+							jobId,
+							...renderJobRetry.openRenderJobSettings(jobId),
 						});
 					},
 				},
@@ -2151,6 +2190,7 @@ export const WebMcp: FC = () => {
 		isPlaying,
 		propStatusesRef,
 		renderQueueActions,
+		renderJobRetry,
 		selectComposition,
 		sequencesRef,
 		setEditorShowGuides,
