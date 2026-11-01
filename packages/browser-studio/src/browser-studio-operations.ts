@@ -64,12 +64,14 @@ import {
 	type InsertCompositionElementRequest,
 	type NewCompositionOptions,
 	type SequenceNodePathRemapping,
+	type SourceFileVersion,
 	type SubscribeToSequencePropsRequest,
 	type SubscribeToSequencePropsResponse,
 	type SymbolicatedStackFrame,
 	type UnsubscribeFromSequencePropsRequest,
 	type UndoRedoNavigation,
 } from '@remotion/studio-shared';
+import type {KeyframeMutationResult} from '@remotion/studio-shared';
 import type {
 	InteractivitySchema,
 	SequenceNodePath,
@@ -626,16 +628,55 @@ export const createBrowserStudioOperations = ({
 		string,
 		SequencePropsSubscription
 	>();
+	const sourceVersionSessionId = `${Date.now()}:${Math.random()}`;
+	let sourceRevision = 0;
+	const sourceFileStates = new Map<
+		string,
+		{content: string; version: SourceFileVersion}
+	>();
+	const captureSourceVersions = (project: VirtualProject) => {
+		const versions = new Map<string, SourceFileVersion>();
+		for (const [filePath, content] of Object.entries(project.files)) {
+			let state = sourceFileStates.get(filePath);
+			if (!state || state.content !== content) {
+				state = {
+					content,
+					version: {
+						sessionId: sourceVersionSessionId,
+						revision: ++sourceRevision,
+					},
+				};
+				sourceFileStates.set(filePath, state);
+			}
+
+			versions.set(filePath, state.version);
+		}
+
+		for (const filePath of sourceFileStates.keys()) {
+			if (!Object.hasOwn(project.files, filePath)) {
+				sourceFileStates.delete(filePath);
+			}
+		}
+
+		return versions;
+	};
+
+	captureSourceVersions(getProject());
 	let refreshDefaultPropsSubscriptions = () => undefined;
-	let refreshSequencePropsSubscriptions = () => undefined;
+	let refreshSequencePropsSubscriptions: (
+		project: VirtualProject,
+		sourceVersions: ReadonlyMap<string, SourceFileVersion>,
+	) => void = () => undefined;
 	const controller = createBrowserStudioProjectController({
 		getStaticFiles,
 		getProject,
+		sourceVersionSessionId,
 		onProjectChange: (project, metadata) => {
+			const sourceVersions = captureSourceVersions(project);
 			onProjectChange(project);
 			refreshDefaultPropsSubscriptions();
 			if (!metadata.skipSequencePropsUpdate) {
-				refreshSequencePropsSubscriptions();
+				refreshSequencePropsSubscriptions(project, sourceVersions);
 			}
 		},
 	});
@@ -786,11 +827,63 @@ export const createBrowserStudioOperations = ({
 		};
 	};
 
+	const getKeyframeMutationResults = ({
+		project,
+		appliedSequenceMutations,
+		appliedEffectMutations,
+	}: Awaited<ReturnType<typeof mutateKeyframesInProject>>): Omit<
+		KeyframeMutationResult,
+		'sourceVersion'
+	>[] => {
+		const targets = [
+			...appliedSequenceMutations.map((mutation) => ({
+				nodePath: {
+					...mutation.nodePath,
+					absolutePath: mutation.absolutePath,
+					nodePath: mutation.updatedNodePath,
+				},
+				effectIndex: null,
+				keys: [...new Set(mutation.updates.map((update) => update.key))],
+			})),
+			...appliedEffectMutations.map((mutation) => ({
+				nodePath: {
+					...mutation.sequenceNodePath,
+					absolutePath: mutation.absolutePath,
+					nodePath: mutation.updatedSequenceNodePath,
+				},
+				effectIndex: mutation.effectIndex,
+				keys: [...new Set(mutation.updates.map((update) => update.key))],
+			})),
+		];
+		return targets.map(({nodePath, effectIndex, keys}) => {
+			const status = getNodeProps({
+				project,
+				node: {filePath: nodePath.absolutePath, nodePath: nodePath.nodePath},
+				componentIdentity: null,
+				keys: effectIndex === null ? keys : [],
+				effectKeys:
+					effectIndex === null
+						? []
+						: Array.from({length: effectIndex + 1}, (_, index) =>
+								index === effectIndex ? keys : [],
+							),
+			});
+			if (effectIndex === null)
+				return {nodePath, effectIndex, props: status.props};
+			const effect = status.effects[effectIndex];
+			if (!effect?.canUpdate)
+				throw new Error('Could not read the updated effect keyframes');
+			return {nodePath, effectIndex, props: effect.props};
+		});
+	};
+
 	const commitKeyframeMutations = async ({
+		includeChangedProps,
 		label,
 		sequenceMutations,
 		effectMutations,
 	}: {
+		includeChangedProps: boolean;
 		label: string;
 		sequenceMutations: SequenceKeyframeMutation[];
 		effectMutations: EffectKeyframeMutation[];
@@ -801,14 +894,30 @@ export const createBrowserStudioOperations = ({
 			sequenceMutations,
 			effectMutations,
 		});
+		const pendingKeyframeResults = includeChangedProps
+			? getKeyframeMutationResults(result)
+			: [];
+		let keyframeResults: KeyframeMutationResult[] = [];
 		controller.applyMutation({
 			undoRedoNavigation: null,
 			timelineSelection: null,
 			fileName: label,
-			mutate: () => result.project,
+			mutate: () => {
+				// Stamp the committed snapshot before notifications can start another edit.
+				const sourceVersions = captureSourceVersions(result.project);
+				keyframeResults = pendingKeyframeResults.map((keyframeResult) => {
+					const sourceVersion = sourceVersions.get(
+						keyframeResult.nodePath.absolutePath,
+					);
+					if (!sourceVersion)
+						throw new Error('Could not version the edited file');
+					return {...keyframeResult, sourceVersion};
+				});
+				return result.project;
+			},
 			nodePathMutationFiles: null,
 		});
-		return result;
+		return {...result, keyframeResults};
 	};
 
 	const getSequenceKeyframeResponse = ({
@@ -921,11 +1030,10 @@ export const createBrowserStudioOperations = ({
 		}
 	};
 
-	refreshSequencePropsSubscriptions = () => {
+	refreshSequencePropsSubscriptions = (project, sourceVersions) => {
 		for (const subscription of sequencePropsSubscriptions.values()) {
 			const {request, result} = subscription;
 			try {
-				const project = getProject();
 				const absolutePath = findProjectFile({
 					filePath: request.fileName,
 					project,
@@ -950,6 +1058,7 @@ export const createBrowserStudioOperations = ({
 					fileName: request.fileName,
 					nodePath: result.nodePath,
 					result: nextStatus,
+					sourceVersion: sourceVersions.get(absolutePath) ?? null,
 				});
 			} catch (error) {
 				if (
@@ -1989,6 +2098,7 @@ export const createBrowserStudioOperations = ({
 	const keyframes: BrowserStudioKeyframeOperations = {
 		addSequenceKeyframe: async (request) => {
 			const result = await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${request.key} keyframe`,
 				sequenceMutations: [
 					{
@@ -2018,6 +2128,7 @@ export const createBrowserStudioOperations = ({
 		},
 		addEffectKeyframe: async (request) => {
 			const result = await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${request.key} effect keyframe`,
 				sequenceMutations: [],
 				effectMutations: [
@@ -2048,6 +2159,7 @@ export const createBrowserStudioOperations = ({
 		},
 		addKeyframes: async ({sequenceKeyframes, effectKeyframes}) => {
 			await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${sequenceKeyframes.length + effectKeyframes.length} keyframes`,
 				sequenceMutations: sequenceKeyframes.map((keyframe) => ({
 					fileName: keyframe.fileName,
@@ -2084,7 +2196,8 @@ export const createBrowserStudioOperations = ({
 			return {success: true, nodePathMutation: null};
 		},
 		deleteKeyframes: async ({sequenceKeyframes, effectKeyframes}) => {
-			await commitKeyframeMutations({
+			const result = await commitKeyframeMutations({
+				includeChangedProps: true,
 				label: `${sequenceKeyframes.length + effectKeyframes.length} keyframes`,
 				sequenceMutations: sequenceKeyframes.map((keyframe) => ({
 					fileName: keyframe.fileName,
@@ -2120,10 +2233,11 @@ export const createBrowserStudioOperations = ({
 					],
 				})),
 			});
-			return {success: true};
+			return {success: true, results: result.keyframeResults};
 		},
 		moveKeyframes: async ({sequenceKeyframes, effectKeyframes}) => {
-			await commitKeyframeMutations({
+			const result = await commitKeyframeMutations({
+				includeChangedProps: true,
 				label: `${sequenceKeyframes.length + effectKeyframes.length} keyframes`,
 				sequenceMutations: sequenceKeyframes.map((keyframe) => ({
 					fileName: keyframe.fileName,
@@ -2165,10 +2279,11 @@ export const createBrowserStudioOperations = ({
 					],
 				})),
 			});
-			return {success: true};
+			return {success: true, results: result.keyframeResults};
 		},
 		updateSequenceKeyframeSettings: async (request) => {
 			const result = await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${request.key} keyframe settings`,
 				sequenceMutations: [
 					{
@@ -2189,6 +2304,7 @@ export const createBrowserStudioOperations = ({
 		},
 		updateEffectKeyframeSettings: async (request) => {
 			const result = await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${request.key} effect keyframe settings`,
 				sequenceMutations: [],
 				effectMutations: [
@@ -2213,6 +2329,7 @@ export const createBrowserStudioOperations = ({
 			effectKeyframes,
 		}) => {
 			await commitKeyframeMutations({
+				includeChangedProps: false,
 				label: `${sequenceKeyframes.length + effectKeyframes.length} keyframe settings`,
 				sequenceMutations: sequenceKeyframes.map((keyframe) => ({
 					fileName: keyframe.fileName,
@@ -3006,9 +3123,11 @@ export const createBrowserStudioOperations = ({
 				: {canUpdate: true, props: {}, results: []};
 		},
 		resetHistory: () => {
+			const project = getProject();
+			const sourceVersions = captureSourceVersions(project);
 			controller.resetHistory();
 			refreshDefaultPropsSubscriptions();
-			refreshSequencePropsSubscriptions();
+			refreshSequencePropsSubscriptions(project, sourceVersions);
 		},
 		splitVideoFromAudio,
 		insertBasicCaptions,

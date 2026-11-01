@@ -18,6 +18,7 @@ import {
 	getDuplicatedElementSelection,
 	subscribeToDuplicatedElementSelection,
 } from '../../helpers/duplicated-element-selection';
+import {usePendingEffectDeletions} from '../../helpers/effect-deletion-state';
 import type {TimelineTrackData} from '../../helpers/get-timeline-sequence-sort-key';
 import {
 	clearInsertedElementSelection,
@@ -373,6 +374,17 @@ const TimelineInner: React.FC = () => {
 			structureTimeline,
 		};
 	}, [calculation, structureTimeline, timeline]);
+	const pendingEffectDeletions = usePendingEffectDeletions();
+	useLayoutEffect(() => {
+		if (pendingEffectDeletions.length === 0) return;
+		for (const track of timeline) {
+			if (track.nodePathInfo)
+				Internals.OptimisticEffectDeletion.reconcile(
+					track.nodePathInfo.sequenceSubscriptionKey,
+					track.sequence.effects,
+				);
+		}
+	}, [pendingEffectDeletions, timeline]);
 	const durationInFrames = videoConfig?.durationInFrames ?? 0;
 
 	const activeFromDragOverrideKeys = Internals.useActiveFromDragOverrideKeys();

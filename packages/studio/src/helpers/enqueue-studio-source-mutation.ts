@@ -6,6 +6,7 @@ import type {
 } from '@remotion/studio-shared';
 import {Internals} from 'remotion';
 import {invalidateDuplicatedElementSelection} from './duplicated-element-selection';
+import {guardPendingEffectDeletion} from './guard-pending-effect-deletion';
 import {installRequiredPackages} from './install-required-package';
 import {loadGoogleFontForPreview} from './load-google-font-for-preview';
 import {
@@ -26,8 +27,15 @@ export const enqueueStudioSourceMutation = <T>(
 	body: unknown,
 	run: (rebasedBody: unknown) => Promise<T>,
 ): Promise<T> => {
+	try {
+		guardPendingEffectDeletion(endpoint, body);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+
 	if (endpoint === '/api/undo' || endpoint === '/api/redo') {
 		invalidateDuplicatedElementSelection();
+		Internals.OptimisticEffectDeletion.clear();
 	}
 
 	const nodes =
