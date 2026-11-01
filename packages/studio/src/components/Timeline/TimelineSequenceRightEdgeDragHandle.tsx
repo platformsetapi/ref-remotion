@@ -22,14 +22,12 @@ import {NoReactInternals} from 'remotion/no-react';
 import {useTimelineCalculator} from '../../helpers/calculate-timeline';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
 import {TRANSPARENT} from '../../helpers/colors';
+import {startEscapeCancelableDeferredPointerSession} from '../../helpers/escape-cancelable-pointer-session';
 import type {
 	SequenceNodePathInfo,
 	TimelineTrackData,
 } from '../../helpers/get-timeline-sequence-sort-key';
-import {
-	isPointerSessionRelease,
-	startDeferredCapturedPointerSession,
-} from '../../helpers/pointer-session';
+import {isPointerSessionRelease} from '../../helpers/pointer-session';
 import {startThresholdPointerSession} from '../../helpers/start-threshold-pointer-session';
 import {TIMELINE_PADDING} from '../../helpers/timeline-layout';
 import {getCachedMediaMetadata} from '../../helpers/use-media-metadata';
@@ -3167,150 +3165,151 @@ export const useTimelineSequenceFromDrag = ({
 			document.body.style.webkitUserSelect = 'none';
 			// Register before React commits so no pointer move can arrive before
 			// the global session listeners exist.
-			stopPointerSessionRef.current = startDeferredCapturedPointerSession({
-				event: e.nativeEvent,
-				captureTarget: e.currentTarget.ownerDocument.body,
-				onMove: (moveEvent, capturePointer) => {
-					const dragState = dragStateRef.current;
-					if (!dragState) {
-						return;
-					}
+			stopPointerSessionRef.current =
+				startEscapeCancelableDeferredPointerSession({
+					event: e.nativeEvent,
+					captureTarget: e.currentTarget.ownerDocument.body,
+					onMove: (moveEvent, capturePointer) => {
+						const dragState = dragStateRef.current;
+						if (!dragState) {
+							return;
+						}
 
-					const dx = moveEvent.clientX - dragState.initialClientX;
-					const pointerDeltaFrames = Math.round(dx / dragState.pxPerFrame);
-					const {deltaFrames, snapFrame} = getTimelineSequenceFromDragResult({
-						timelineDurationInFrames,
-						deltaFrames: pointerDeltaFrames,
-						pxPerFrame: dragState.pxPerFrame,
-						snappingEnabled: latestRef.current.editorSnapping,
-						targets: dragState.targets,
-					});
-					dragState.latestDeltaFrames = deltaFrames;
-					if (
-						!dragState.didMove &&
-						(deltaFrames !== 0 ||
-							(snapFrame !== null && pointerDeltaFrames !== 0))
-					) {
-						// The bar can be removed when it leaves the visible timeline.
-						// Capture only after a real drag starts so clicks and double-clicks
-						// remain targeted at the bar.
-						capturePointer();
-						dragState.didMove = true;
-						const draggedItem: TimelineSelection = {
-							type: 'sequence',
-							nodePathInfo: latestNodePathInfo,
-						};
+						const dx = moveEvent.clientX - dragState.initialClientX;
+						const pointerDeltaFrames = Math.round(dx / dragState.pxPerFrame);
+						const {deltaFrames, snapFrame} = getTimelineSequenceFromDragResult({
+							timelineDurationInFrames,
+							deltaFrames: pointerDeltaFrames,
+							pxPerFrame: dragState.pxPerFrame,
+							snappingEnabled: latestRef.current.editorSnapping,
+							targets: dragState.targets,
+						});
+						dragState.latestDeltaFrames = deltaFrames;
 						if (
-							!currentSelection.current.isSelected(draggedItem) &&
-							!currentSelection.current.containsSelection(latestNodePathInfo)
+							!dragState.didMove &&
+							(deltaFrames !== 0 ||
+								(snapFrame !== null && pointerDeltaFrames !== 0))
 						) {
-							currentSelection.current.selectItem(draggedItem);
+							// The bar can be removed when it leaves the visible timeline.
+							// Capture only after a real drag starts so clicks and double-clicks
+							// remain targeted at the bar.
+							capturePointer();
+							dragState.didMove = true;
+							const draggedItem: TimelineSelection = {
+								type: 'sequence',
+								nodePathInfo: latestNodePathInfo,
+							};
+							if (
+								!currentSelection.current.isSelected(draggedItem) &&
+								!currentSelection.current.containsSelection(latestNodePathInfo)
+							) {
+								currentSelection.current.selectItem(draggedItem);
+							}
 						}
-					}
 
-					updateSnapFrameRef?.current(dragState.didMove ? snapFrame : null);
+						updateSnapFrameRef?.current(dragState.didMove ? snapFrame : null);
 
-					if (deltaFrames === dragState.lastPreviewDeltaFrames) {
-						return;
-					}
+						if (deltaFrames === dragState.lastPreviewDeltaFrames) {
+							return;
+						}
 
-					dragState.lastPreviewDeltaFrames = deltaFrames;
-					if (dragState.animationSelections.length > 0) {
-						setDraggedKeyframes(
-							dragState.animationSelections.flatMap((selection) =>
-								selection.type === 'keyframe'
-									? [
-											{
-												nodePathInfo: selection.nodePathInfo,
-												frame: selection.frame + deltaFrames,
-											},
-										]
-									: [],
-							),
-						);
-					}
+						dragState.lastPreviewDeltaFrames = deltaFrames;
+						if (dragState.animationSelections.length > 0) {
+							setDraggedKeyframes(
+								dragState.animationSelections.flatMap((selection) =>
+									selection.type === 'keyframe'
+										? [
+												{
+													nodePathInfo: selection.nodePathInfo,
+													frame: selection.frame + deltaFrames,
+												},
+											]
+										: [],
+								),
+							);
+						}
 
-					const updates: DragOverrideUpdate[] = [];
-					const effectUpdates: EffectDragOverrideUpdate[] = [];
+						const updates: DragOverrideUpdate[] = [];
+						const effectUpdates: EffectDragOverrideUpdate[] = [];
 
-					for (const target of dragState.targets) {
-						const nextFrom = getTimelineSequenceFromDragValue({
-							initialFrom: target.initialFrom,
-							deltaFrames: deltaFrames * target.parentPlaybackRate,
-						});
-						updates.push({
-							nodePath: target.nodePath,
-							key: 'from',
-							value: Internals.makeStaticDragOverride(nextFrom),
-						});
-						for (const keyframeTarget of target.sequenceKeyframes) {
+						for (const target of dragState.targets) {
+							const nextFrom = getTimelineSequenceFromDragValue({
+								initialFrom: target.initialFrom,
+								deltaFrames: deltaFrames * target.parentPlaybackRate,
+							});
 							updates.push({
-								nodePath: keyframeTarget.nodePath,
-								key: keyframeTarget.fieldKey,
-								value: {
-									type: 'keyframed',
-									status: shiftKeyframedStatus({
-										status: keyframeTarget.status,
-										deltaFrames:
-											deltaFrames * keyframeTarget.parentPlaybackRate,
-										isDescendant: keyframeTarget.isDescendant,
-									}),
-								},
+								nodePath: target.nodePath,
+								key: 'from',
+								value: Internals.makeStaticDragOverride(nextFrom),
 							});
+							for (const keyframeTarget of target.sequenceKeyframes) {
+								updates.push({
+									nodePath: keyframeTarget.nodePath,
+									key: keyframeTarget.fieldKey,
+									value: {
+										type: 'keyframed',
+										status: shiftKeyframedStatus({
+											status: keyframeTarget.status,
+											deltaFrames:
+												deltaFrames * keyframeTarget.parentPlaybackRate,
+											isDescendant: keyframeTarget.isDescendant,
+										}),
+									},
+								});
+							}
+
+							for (const keyframeTarget of target.effectKeyframes) {
+								effectUpdates.push({
+									nodePath: keyframeTarget.nodePath,
+									effectIndex: keyframeTarget.effectIndex,
+									key: keyframeTarget.fieldKey,
+									value: {
+										type: 'keyframed',
+										status: shiftKeyframedStatus({
+											status: keyframeTarget.status,
+											deltaFrames:
+												deltaFrames * keyframeTarget.parentPlaybackRate,
+											isDescendant: keyframeTarget.isDescendant,
+										}),
+									},
+								});
+							}
 						}
 
-						for (const keyframeTarget of target.effectKeyframes) {
-							effectUpdates.push({
-								nodePath: keyframeTarget.nodePath,
-								effectIndex: keyframeTarget.effectIndex,
-								key: keyframeTarget.fieldKey,
-								value: {
-									type: 'keyframed',
-									status: shiftKeyframedStatus({
-										status: keyframeTarget.status,
-										deltaFrames:
-											deltaFrames * keyframeTarget.parentPlaybackRate,
-										isDescendant: keyframeTarget.isDescendant,
-									}),
-								},
-							});
-						}
-					}
-
-					if (latestRef.current.batchSetters) {
-						latestRef.current.batchSetters.setDragOverridesBatch(updates);
-					} else {
-						for (const update of updates) {
-							latestRef.current.setDragOverrides(
-								update.nodePath,
-								update.key,
-								update.value,
-							);
-						}
-					}
-
-					if (effectUpdates.length > 0) {
 						if (latestRef.current.batchSetters) {
-							latestRef.current.batchSetters.setEffectDragOverridesBatch(
-								effectUpdates,
-							);
+							latestRef.current.batchSetters.setDragOverridesBatch(updates);
 						} else {
-							for (const update of effectUpdates) {
-								latestRef.current.setEffectDragOverrides(
+							for (const update of updates) {
+								latestRef.current.setDragOverrides(
 									update.nodePath,
-									update.effectIndex,
 									update.key,
 									update.value,
 								);
 							}
 						}
-					}
-				},
-				onEnd: (reason, endEvent) => {
-					stopPointerSessionRef.current = null;
-					finishDrag(isPointerSessionRelease(reason, endEvent));
-				},
-			});
+
+						if (effectUpdates.length > 0) {
+							if (latestRef.current.batchSetters) {
+								latestRef.current.batchSetters.setEffectDragOverridesBatch(
+									effectUpdates,
+								);
+							} else {
+								for (const update of effectUpdates) {
+									latestRef.current.setEffectDragOverrides(
+										update.nodePath,
+										update.effectIndex,
+										update.key,
+										update.value,
+									);
+								}
+							}
+						}
+					},
+					onEnd: (reason, endEvent) => {
+						stopPointerSessionRef.current = null;
+						finishDrag(isPointerSessionRelease(reason, endEvent));
+					},
+				});
 		},
 		[
 			currentSelection,
