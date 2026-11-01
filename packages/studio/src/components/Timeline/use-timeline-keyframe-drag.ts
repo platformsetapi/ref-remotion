@@ -17,9 +17,12 @@ import type {
 } from '../../helpers/get-timeline-sequence-sort-key';
 import {isPointerSessionRelease} from '../../helpers/pointer-session';
 import {TIMELINE_PADDING} from '../../helpers/timeline-layout';
+import type {createCanvasDragPreview} from '../canvas-drag-preview';
+import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import {callMoveKeyframes} from './call-move-keyframe';
 import {findTrackForNodePathInfo} from './find-track-for-node-path-info';
+import {finishKeyframePreview} from './finish-keyframe-preview';
 import {
 	getKeyframeDisplayOffset,
 	getKeyframeSourceFrame,
@@ -37,6 +40,7 @@ import {
 	type TimelineSelectionInteraction,
 } from './TimelineSelection';
 import {TimelineWidthContext} from './TimelineWidthProvider';
+import {useSequencePropPreview} from './use-sequence-prop-preview';
 
 const {
 	canMoveCanvasKeyframes,
@@ -375,79 +379,144 @@ const canMoveTimelineKeyframeDragTargets = ({
 
 const applyDragOverrides = ({
 	delta,
-	setDragOverrides,
-	setEffectDragOverrides,
+	preview,
+	updateDragOverridesBatch,
+	updateEffectDragOverridesBatch,
 	targets,
 }: {
 	readonly delta: number;
-	readonly setDragOverrides: React.ContextType<
+	readonly preview: ReturnType<typeof createCanvasDragPreview>;
+	readonly updateDragOverridesBatch: React.ContextType<
 		typeof Internals.VisualModeSettersContext
-	>['setDragOverrides'];
-	readonly setEffectDragOverrides: React.ContextType<
+	>['updateDragOverridesBatch'];
+	readonly updateEffectDragOverridesBatch: React.ContextType<
 		typeof Internals.VisualModeSettersContext
-	>['setEffectDragOverrides'];
+	>['updateEffectDragOverridesBatch'];
 	readonly targets: readonly TimelineKeyframeDragTarget[];
 }) => {
+	const sequenceUpdates: Parameters<
+		typeof preview.setDragOverridesBatch
+	>[0][number][] = [];
+	const effectUpdates: Parameters<
+		typeof preview.setEffectDragOverridesBatch
+	>[0][number][] = [];
 	for (const group of groupTargets(targets)) {
 		const [first] = group;
-		if (!first) {
-			continue;
-		}
-
-		const override = getMovedCanvasKeyframeOverride({targets: group, delta});
-		if (first.type === 'sequence') {
-			setDragOverrides(first.nodePath, first.fieldKey, override);
-			continue;
-		}
-
-		setEffectDragOverrides(
-			first.nodePath,
-			first.effectIndex,
-			first.fieldKey,
-			override,
-		);
+		if (!first) continue;
+		const value = getMovedCanvasKeyframeOverride({targets: group, delta});
+		if (first.type === 'sequence')
+			sequenceUpdates.push({
+				nodePath: first.nodePath,
+				key: first.fieldKey,
+				value,
+			});
+		else
+			effectUpdates.push({
+				nodePath: first.nodePath,
+				effectIndex: first.effectIndex,
+				key: first.fieldKey,
+				value,
+			});
 	}
+
+	preview.setDragOverridesBatch(sequenceUpdates, updateDragOverridesBatch);
+	preview.setEffectDragOverridesBatch(
+		effectUpdates,
+		updateEffectDragOverridesBatch,
+	);
 };
 
-const clearDragOverridesForTargets = ({
-	clearDragOverrides,
-	clearEffectDragOverrides,
+const saveKeyframeDrag = ({
 	targets,
+	delta,
+	preview,
+	clientId,
+	previousSelections,
+	expectedSelections,
+	currentSelection,
+	getSnapshot,
 }: {
-	readonly clearDragOverrides: React.ContextType<
-		typeof Internals.VisualModeSettersContext
-	>['clearDragOverrides'];
-	readonly clearEffectDragOverrides: React.ContextType<
-		typeof Internals.VisualModeSettersContext
-	>['clearEffectDragOverrides'];
+	readonly previousSelections: readonly TimelineSelection[];
+	readonly expectedSelections: readonly TimelineSelection[];
+	readonly currentSelection: ReturnType<
+		typeof useCurrentTimelineSelectionStateAsRef
+	>;
+	readonly getSnapshot: React.ContextType<
+		typeof Internals.VisualModePropStatusesSubscriptionContext
+	>['getSnapshot'];
 	readonly targets: readonly TimelineKeyframeDragTarget[];
+	readonly delta: number;
+	readonly preview: ReturnType<typeof createCanvasDragPreview>;
+	readonly clientId: string;
 }) => {
-	const clearedSequences = new Set<string>();
-	const clearedEffects = new Set<string>();
-
-	for (const target of targets) {
-		if (target.type === 'sequence') {
-			const sequenceKey = JSON.stringify(target.nodePath);
-			if (clearedSequences.has(sequenceKey)) {
-				continue;
-			}
-
-			clearedSequences.add(sequenceKey);
-			clearDragOverrides(target.nodePath);
-			continue;
-		}
-
-		const effectKey = JSON.stringify({
-			nodePath: target.nodePath,
-			effectIndex: target.effectIndex,
-		});
-		if (clearedEffects.has(effectKey)) {
-			continue;
-		}
-
-		clearedEffects.add(effectKey);
-		clearEffectDragOverrides(target.nodePath, target.effectIndex);
+	const changes = targets.map((target) => {
+		const nodePath = preview.getNodePath(target.nodePath);
+		return nodePath === null
+			? null
+			: {...target, nodePath, fileName: nodePath.absolutePath};
+	});
+	if (changes.some((change) => change === null)) {
+		preview.cancel();
+		return;
 	}
+
+	const currentTargets = changes.filter(Internals.truthy);
+	callMoveKeyframes({
+		sequenceKeyframes: currentTargets
+			.filter(
+				(target): target is TimelineKeyframeDragTarget & {type: 'sequence'} =>
+					target.type === 'sequence',
+			)
+			.map((target) => ({
+				fileName: target.fileName,
+				nodePath: target.nodePath,
+				fieldKey: target.fieldKey,
+				...getCanvasKeyframeMove(target, delta),
+				schema: target.schema,
+			})),
+		effectKeyframes: currentTargets
+			.filter(
+				(target): target is TimelineKeyframeDragTarget & {type: 'effect'} =>
+					target.type === 'effect',
+			)
+			.map((target) => ({
+				fileName: target.fileName,
+				nodePath: target.nodePath,
+				effectIndex: target.effectIndex,
+				fieldKey: target.fieldKey,
+				...getCanvasKeyframeMove(target, delta),
+				schema: target.schema,
+			})),
+		setPropStatuses: preview.setPropStatuses,
+		setPropStatusesBatch: preview.setPropStatusesBatch,
+		clientId,
+	})
+		.then(() => {
+			// Moving keyframes confirms persistence without returning parsed prop statuses.
+			preview.acknowledge({canUpdate: true, results: []});
+		})
+		.catch((error) => {
+			finishKeyframePreview({
+				preview,
+				reason: 'failure',
+				recoverSelection: true,
+				targets: targets.map((target) => ({
+					...target,
+					nodePathInfo: {
+						...target.nodePathInfo,
+						sequenceSubscriptionKey: target.nodePath,
+					},
+				})),
+				previousSelections,
+				expectedSelections,
+				currentSelection,
+				getSnapshot,
+			});
+			showNotification(
+				`Could not move keyframes: ${error instanceof Error ? error.message : String(error)}`,
+				4000,
+			);
+		});
 };
 
 const getFrameDelta = ({
@@ -491,13 +560,13 @@ export const useTimelineKeyframeDrag = ({
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
-	const {
-		clearDragOverrides,
-		clearEffectDragOverrides,
-		setPropStatuses,
-		setDragOverrides,
-		setEffectDragOverrides,
-	} = useContext(Internals.VisualModeSettersContext);
+	const {updateDragOverridesBatch, updateEffectDragOverridesBatch} = useContext(
+		Internals.VisualModeSettersContext,
+	);
+	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
+	const propStatusesSubscription = useContext(
+		Internals.VisualModePropStatusesSubscriptionContext,
+	);
 	const currentSelection = useCurrentTimelineSelectionStateAsRef();
 	const {clearDraggedKeyframes, setDraggedKeyframes} =
 		useTimelineKeyframeDragState();
@@ -541,6 +610,7 @@ export const useTimelineKeyframeDrag = ({
 					? selectedKeyframes
 					: [clickedSelection];
 
+			let previousSelections = currentSelection.current.selectedItems;
 			const startClientX = e.clientX;
 			let dragTargets: TimelineKeyframeDragTarget[] | null = null;
 			let hasDragged = false;
@@ -555,6 +625,7 @@ export const useTimelineKeyframeDrag = ({
 					return dragTargets;
 				}
 
+				previousSelections = currentSelection.current.selectedItems;
 				const {tracks} = calculateTimeline({
 					sequences,
 					overrideIdsToNodePaths: overrideIdToNodePathMappings,
@@ -577,16 +648,22 @@ export const useTimelineKeyframeDrag = ({
 			let stopPointerSession: (() => void) | null = null;
 			const cleanup = () => stopPointerSession?.();
 
-			const clearActiveOverrides = () => {
-				const targets = dragTargets;
-				if (targets === null) {
-					return;
-				}
-
-				clearDragOverridesForTargets({
-					clearDragOverrides,
-					clearEffectDragOverrides,
-					targets,
+			const cancelDrag = () => {
+				finishKeyframePreview({
+					preview: takePreview(),
+					reason: 'cancel',
+					recoverSelection: true,
+					targets: (dragTargets ?? []).map((target) => ({
+						...target,
+						nodePathInfo: {
+							...target.nodePathInfo,
+							sequenceSubscriptionKey: target.nodePath,
+						},
+					})),
+					previousSelections,
+					expectedSelections: previousSelections,
+					currentSelection,
+					getSnapshot: propStatusesSubscription.getSnapshot,
 				});
 			};
 
@@ -621,7 +698,7 @@ export const useTimelineKeyframeDrag = ({
 				hasDragged = true;
 				lastDelta = delta;
 				if (!canMoveTimelineKeyframeDragTargets({targets, delta})) {
-					clearActiveOverrides();
+					cancelPreview();
 					clearDraggedKeyframes();
 					return;
 				}
@@ -636,8 +713,9 @@ export const useTimelineKeyframeDrag = ({
 				);
 				applyDragOverrides({
 					delta,
-					setDragOverrides,
-					setEffectDragOverrides,
+					preview: getPreview(),
+					updateDragOverridesBatch,
+					updateEffectDragOverridesBatch,
 					targets,
 				});
 			};
@@ -651,7 +729,7 @@ export const useTimelineKeyframeDrag = ({
 						onSelect(interaction);
 					}
 
-					clearActiveOverrides();
+					cancelDrag();
 					clearDraggedKeyframes();
 					return;
 				}
@@ -662,64 +740,39 @@ export const useTimelineKeyframeDrag = ({
 						delta: lastDelta,
 					})
 				) {
-					clearActiveOverrides();
+					cancelDrag();
 					clearDraggedKeyframes();
 					return;
 				}
 
-				if (shouldDragExistingSelection) {
-					currentSelection.current.selectItems(
-						targets.map((target) => ({
-							type: 'keyframe',
-							nodePathInfo: target.nodePathInfo,
-							frame: target.displayFrame + lastDelta,
-						})),
-					);
-				}
+				const expectedSelections: readonly TimelineSelection[] =
+					shouldDragExistingSelection
+						? targets.map((target) => ({
+								type: 'keyframe',
+								nodePathInfo: target.nodePathInfo,
+								frame: target.displayFrame + lastDelta,
+							}))
+						: currentSelection.current.selectedItems;
+				if (shouldDragExistingSelection)
+					currentSelection.current.selectItems(expectedSelections);
 
-				clearActiveOverrides();
 				clearDraggedKeyframes();
 
-				callMoveKeyframes({
-					sequenceKeyframes: targets
-						.filter(
-							(
-								target,
-							): target is TimelineKeyframeDragTarget & {
-								type: 'sequence';
-							} => target.type === 'sequence',
-						)
-						.map((target) => ({
-							fileName: target.fileName,
-							nodePath: target.nodePath,
-							fieldKey: target.fieldKey,
-							...getCanvasKeyframeMove(target, lastDelta),
-							schema: target.schema,
-						})),
-					effectKeyframes: targets
-						.filter(
-							(
-								target,
-							): target is TimelineKeyframeDragTarget & {
-								type: 'effect';
-							} => target.type === 'effect',
-						)
-						.map((target) => ({
-							fileName: target.fileName,
-							nodePath: target.nodePath,
-							effectIndex: target.effectIndex,
-							fieldKey: target.fieldKey,
-							...getCanvasKeyframeMove(target, lastDelta),
-							schema: target.schema,
-						})),
-					setPropStatuses,
+				saveKeyframeDrag({
+					targets,
+					delta: lastDelta,
+					preview: takePreview(),
 					clientId: previewServerState.clientId,
-				}).catch(() => undefined);
+					previousSelections,
+					expectedSelections,
+					currentSelection,
+					getSnapshot: propStatusesSubscription.getSnapshot,
+				});
 			};
 
 			const onPointerCancel = () => {
 				cleanup();
-				clearActiveOverrides();
+				cancelDrag();
 				clearDraggedKeyframes();
 			};
 
@@ -737,8 +790,9 @@ export const useTimelineKeyframeDrag = ({
 			});
 		},
 		[
-			clearDragOverrides,
-			clearEffectDragOverrides,
+			getPreview,
+			takePreview,
+			cancelPreview,
 			clearDraggedKeyframes,
 			currentSelection,
 			frame,
@@ -747,14 +801,14 @@ export const useTimelineKeyframeDrag = ({
 			calculateTimeline,
 			overrideIdToNodePathMappingsRef,
 			propStatusesRef,
+			propStatusesSubscription,
 			previewServerState,
 			selectable,
 			selected,
 			sequencesRef,
-			setPropStatuses,
-			setDragOverrides,
+			updateDragOverridesBatch,
 			setDraggedKeyframes,
-			setEffectDragOverrides,
+			updateEffectDragOverridesBatch,
 			timelineWidth,
 			videoConfig.durationInFrames,
 		],
@@ -783,13 +837,13 @@ export const useTimelineEasingKeyframeDrag = ({
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
-	const {
-		clearDragOverrides,
-		clearEffectDragOverrides,
-		setPropStatuses,
-		setDragOverrides,
-		setEffectDragOverrides,
-	} = useContext(Internals.VisualModeSettersContext);
+	const {updateDragOverridesBatch, updateEffectDragOverridesBatch} = useContext(
+		Internals.VisualModeSettersContext,
+	);
+	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
+	const propStatusesSubscription = useContext(
+		Internals.VisualModePropStatusesSubscriptionContext,
+	);
 	const currentSelection = useCurrentTimelineSelectionStateAsRef();
 	const {clearDraggedKeyframes} = useTimelineKeyframeDragState();
 
@@ -825,6 +879,7 @@ export const useTimelineEasingKeyframeDrag = ({
 				onSelect(interaction);
 			}
 
+			let previousSelections = currentSelection.current.selectedItems;
 			const startClientX = e.clientX;
 			let dragTargets: TimelineKeyframeDragTarget[] | null = null;
 			let hasDragged = false;
@@ -839,6 +894,7 @@ export const useTimelineEasingKeyframeDrag = ({
 					return dragTargets;
 				}
 
+				previousSelections = currentSelection.current.selectedItems;
 				const {tracks} = calculateTimeline({
 					sequences,
 					overrideIdsToNodePaths: overrideIdToNodePathMappings,
@@ -861,16 +917,22 @@ export const useTimelineEasingKeyframeDrag = ({
 			let stopPointerSession: (() => void) | null = null;
 			const cleanup = () => stopPointerSession?.();
 
-			const clearActiveOverrides = () => {
-				const targets = dragTargets;
-				if (targets === null) {
-					return;
-				}
-
-				clearDragOverridesForTargets({
-					clearDragOverrides,
-					clearEffectDragOverrides,
-					targets,
+			const cancelDrag = () => {
+				finishKeyframePreview({
+					preview: takePreview(),
+					reason: 'cancel',
+					recoverSelection: true,
+					targets: (dragTargets ?? []).map((target) => ({
+						...target,
+						nodePathInfo: {
+							...target.nodePathInfo,
+							sequenceSubscriptionKey: target.nodePath,
+						},
+					})),
+					previousSelections,
+					expectedSelections: previousSelections,
+					currentSelection,
+					getSnapshot: propStatusesSubscription.getSnapshot,
 				});
 			};
 
@@ -905,15 +967,16 @@ export const useTimelineEasingKeyframeDrag = ({
 				hasDragged = true;
 				lastDelta = delta;
 				if (!canMoveTimelineKeyframeDragTargets({targets, delta})) {
-					clearActiveOverrides();
+					cancelPreview();
 					clearDraggedKeyframes();
 					return;
 				}
 
 				applyDragOverrides({
 					delta,
-					setDragOverrides,
-					setEffectDragOverrides,
+					preview: getPreview(),
+					updateDragOverridesBatch,
+					updateEffectDragOverridesBatch,
 					targets,
 				});
 			};
@@ -927,13 +990,13 @@ export const useTimelineEasingKeyframeDrag = ({
 						onSelect(interaction);
 					}
 
-					clearActiveOverrides();
+					cancelDrag();
 					clearDraggedKeyframes();
 					return;
 				}
 
 				if (lastDelta === 0 || targets === null) {
-					clearActiveOverrides();
+					cancelDrag();
 					clearDraggedKeyframes();
 					return;
 				}
@@ -944,65 +1007,40 @@ export const useTimelineEasingKeyframeDrag = ({
 						delta: lastDelta,
 					})
 				) {
-					clearActiveOverrides();
+					cancelDrag();
 					clearDraggedKeyframes();
 					return;
 				}
 
-				currentSelection.current.selectItems(
-					getTimelineSelectionsAfterEasingKeyframeDrag({
+				const expectedSelections = getTimelineSelectionsAfterEasingKeyframeDrag(
+					{
 						delta: lastDelta,
 						selections: currentSelection.current.selectedItems,
 						targets: targets.map((target) => ({
 							nodePathInfo: target.nodePathInfo,
 							frame: target.displayFrame,
 						})),
-					}),
+					},
 				);
+				currentSelection.current.selectItems(expectedSelections);
 
-				clearActiveOverrides();
 				clearDraggedKeyframes();
 
-				callMoveKeyframes({
-					sequenceKeyframes: targets
-						.filter(
-							(
-								target,
-							): target is TimelineKeyframeDragTarget & {
-								type: 'sequence';
-							} => target.type === 'sequence',
-						)
-						.map((target) => ({
-							fileName: target.fileName,
-							nodePath: target.nodePath,
-							fieldKey: target.fieldKey,
-							...getCanvasKeyframeMove(target, lastDelta),
-							schema: target.schema,
-						})),
-					effectKeyframes: targets
-						.filter(
-							(
-								target,
-							): target is TimelineKeyframeDragTarget & {
-								type: 'effect';
-							} => target.type === 'effect',
-						)
-						.map((target) => ({
-							fileName: target.fileName,
-							nodePath: target.nodePath,
-							effectIndex: target.effectIndex,
-							fieldKey: target.fieldKey,
-							...getCanvasKeyframeMove(target, lastDelta),
-							schema: target.schema,
-						})),
-					setPropStatuses,
+				saveKeyframeDrag({
+					targets,
+					delta: lastDelta,
+					preview: takePreview(),
 					clientId: previewServerState.clientId,
-				}).catch(() => undefined);
+					previousSelections,
+					expectedSelections,
+					currentSelection,
+					getSnapshot: propStatusesSubscription.getSnapshot,
+				});
 			};
 
 			const onPointerCancel = () => {
 				cleanup();
-				clearActiveOverrides();
+				cancelDrag();
 				clearDraggedKeyframes();
 			};
 
@@ -1020,22 +1058,23 @@ export const useTimelineEasingKeyframeDrag = ({
 			});
 		},
 		[
-			clearDragOverrides,
-			clearEffectDragOverrides,
+			getPreview,
+			takePreview,
+			cancelPreview,
 			clearDraggedKeyframes,
 			currentSelection,
 			onSelect,
 			calculateTimeline,
 			overrideIdToNodePathMappingsRef,
 			propStatusesRef,
+			propStatusesSubscription,
 			previewServerState,
 			selectable,
 			selected,
 			selectionItem,
 			sequencesRef,
-			setPropStatuses,
-			setDragOverrides,
-			setEffectDragOverrides,
+			updateDragOverridesBatch,
+			updateEffectDragOverridesBatch,
 			timelineWidth,
 			videoConfig.durationInFrames,
 		],

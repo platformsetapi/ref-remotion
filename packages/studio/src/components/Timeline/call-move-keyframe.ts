@@ -185,22 +185,39 @@ export const callMoveKeyframes = ({
 	sequenceKeyframes,
 	effectKeyframes,
 	setPropStatuses,
+	setPropStatusesBatch,
 	clientId,
 }: {
 	sequenceKeyframes: MoveSequenceKeyframeChange[];
 	effectKeyframes: MoveEffectKeyframeChange[];
 	setPropStatuses: SetPropStatuses;
+	setPropStatusesBatch:
+		| ((
+				updates: readonly {
+					nodePath: SequencePropsSubscriptionKey;
+					update: Parameters<SetPropStatuses>[1];
+				}[],
+		  ) => void)
+		| null;
 	clientId: string;
 }): Promise<void> => {
 	if (sequenceKeyframes.length === 0 && effectKeyframes.length === 0) {
 		return Promise.resolve();
 	}
 
+	const updates: {
+		nodePath: SequencePropsSubscriptionKey;
+		update: Parameters<SetPropStatuses>[1];
+	}[] = [];
 	applyOptimisticKeyframeMoves({
 		sequenceKeyframes,
 		effectKeyframes,
-		setPropStatuses,
+		setPropStatuses:
+			setPropStatusesBatch === null
+				? setPropStatuses
+				: (nodePath, update) => updates.push({nodePath, update}),
 	});
+	if (setPropStatusesBatch !== null) setPropStatusesBatch(updates);
 
 	return moveKeyframes({
 		sequenceKeyframes: sequenceKeyframes.map((keyframe) => ({

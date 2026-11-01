@@ -409,6 +409,9 @@ export const createCanvasDragPreview = ({
 
 	return {
 		getNodePath,
+		isLatest: () =>
+			owned.size > 0 &&
+			[...owned].every(([field, layer]) => field.layers.at(-1) === layer),
 		setDragOverrides: (
 			nodePath: SequencePropsSubscriptionKey,
 			key: string,
