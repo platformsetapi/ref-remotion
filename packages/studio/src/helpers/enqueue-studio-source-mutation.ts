@@ -5,6 +5,7 @@ import type {
 	SequenceNodePathMutation,
 } from '@remotion/studio-shared';
 import {Internals} from 'remotion';
+import {invalidateDuplicatedElementSelection} from './duplicated-element-selection';
 import {installRequiredPackages} from './install-required-package';
 import {loadGoogleFontForPreview} from './load-google-font-for-preview';
 import {
@@ -25,6 +26,10 @@ export const enqueueStudioSourceMutation = <T>(
 	body: unknown,
 	run: (rebasedBody: unknown) => Promise<T>,
 ): Promise<T> => {
+	if (endpoint === '/api/undo' || endpoint === '/api/redo') {
+		invalidateDuplicatedElementSelection();
+	}
+
 	const nodes =
 		endpoint === '/api/delete-nodes'
 			? (body as DeleteNodesRequest).nodes.map((node) => ({

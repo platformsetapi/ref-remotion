@@ -1,5 +1,6 @@
 import type {SequenceNodePathMutation} from '@remotion/studio-shared';
 import {Internals} from 'remotion';
+import {recordDuplicationSelectionMutation} from './duplicated-element-selection';
 import {requestInsertedElementSelection} from './inserted-element-selection';
 import {
 	markSourceRequestPaths,
@@ -118,6 +119,7 @@ export const queueSequenceNodePathMutation = (
 
 	seenMutationIds.add(mutation.mutationId);
 	pendingMutations.push(mutation);
+	recordDuplicationSelectionMutation(mutation);
 	markSourceRequestPaths(
 		{
 			results: [

@@ -10,14 +10,12 @@ import type {
 import {Internals, useVideoConfig} from 'remotion';
 import {useTimelineCalculator} from '../../helpers/calculate-timeline';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
+import {startEscapeCancelableCapturedPointerSession} from '../../helpers/escape-cancelable-pointer-session';
 import type {
 	SequenceNodePathInfo,
 	TimelineTrackData,
 } from '../../helpers/get-timeline-sequence-sort-key';
-import {
-	isPointerSessionRelease,
-	startCapturedPointerSession,
-} from '../../helpers/pointer-session';
+import {isPointerSessionRelease} from '../../helpers/pointer-session';
 import {TIMELINE_PADDING} from '../../helpers/timeline-layout';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import {callMoveKeyframes} from './call-move-keyframe';
@@ -725,7 +723,7 @@ export const useTimelineKeyframeDrag = ({
 				clearDraggedKeyframes();
 			};
 
-			stopPointerSession = startCapturedPointerSession({
+			stopPointerSession = startEscapeCancelableCapturedPointerSession({
 				event: e,
 				captureTarget: e.currentTarget,
 				onMove: onPointerMove,
@@ -1008,7 +1006,7 @@ export const useTimelineEasingKeyframeDrag = ({
 				clearDraggedKeyframes();
 			};
 
-			stopPointerSession = startCapturedPointerSession({
+			stopPointerSession = startEscapeCancelableCapturedPointerSession({
 				event: e,
 				captureTarget: e.currentTarget,
 				onMove: onPointerMove,

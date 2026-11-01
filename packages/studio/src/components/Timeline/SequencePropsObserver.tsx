@@ -12,7 +12,12 @@ import type {
 import {Internals} from 'remotion';
 import {FastRefreshContext} from '../../fast-refresh-context';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
+import {markDuplicationSelectionMutationsApplied} from '../../helpers/duplicated-element-selection';
 import {takePendingSequenceNodePathMutations} from '../../helpers/sequence-node-path-mutations';
+import {
+	reconcileCanvasDragPreviewStatuses,
+	remapCanvasDragPreviews,
+} from '../canvas-drag-preview';
 import {ExpandedTracksSetterContext} from '../ExpandedTracksProvider';
 import {deepEqual} from '../RenderModal/SchemaEditor/deep-equal';
 import {refreshSequencePropsSubscription} from './sequence-props-subscription-store';
@@ -26,9 +31,13 @@ export const SequencePropsObserver = ({
 	) => void;
 }) => {
 	const {subscribeToEvent} = useContext(StudioServerConnectionCtx);
-	const {remapPropStatuses, setPropStatuses} = useContext(
-		Internals.VisualModeSettersContext,
-	);
+	const {
+		remapPropStatuses,
+		setPropStatuses,
+		updateDragOverrides,
+		remapDragOverrideFields,
+		remapEffectDragOverrideFields,
+	} = useContext(Internals.VisualModeSettersContext);
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
@@ -75,8 +84,13 @@ export const SequencePropsObserver = ({
 
 			// Every save re-sends all subscribed nodes of the file. Keep unchanged
 			// statuses so their consumers do not rerender.
+			const result = reconcileCanvasDragPreviewStatuses(
+				updateDragOverrides,
+				event.nodePath,
+				event.result,
+			);
 			setPropStatuses(event.nodePath, (prev) =>
-				deepEqual(prev, event.result) ? prev : event.result,
+				deepEqual(prev, result) ? prev : result,
 			);
 		};
 
@@ -85,7 +99,7 @@ export const SequencePropsObserver = ({
 		return () => {
 			unsubscribe();
 		};
-	}, [setPropStatuses, subscribeToEvent]);
+	}, [setPropStatuses, subscribeToEvent, updateDragOverrides]);
 
 	useLayoutEffect(() => {
 		const mutations = takePendingSequenceNodePathMutations();
@@ -93,6 +107,16 @@ export const SequencePropsObserver = ({
 			return;
 		}
 
+		markDuplicationSelectionMutationsApplied(mutations, fastRefreshes);
+
+		remapCanvasDragPreviews(
+			{
+				updateDragOverrides,
+				remapDragOverrideFields,
+				remapEffectDragOverrideFields,
+			},
+			mutations,
+		);
 		remapSelectionNodePaths(mutations);
 		remapCollapsedLayers(mutations);
 
@@ -279,6 +303,9 @@ export const SequencePropsObserver = ({
 		remapSelectionNodePaths,
 		remapCollapsedLayers,
 		remapPropStatuses,
+		updateDragOverrides,
+		remapDragOverrideFields,
+		remapEffectDragOverrideFields,
 		setOverrideIdToNodePath,
 	]);
 

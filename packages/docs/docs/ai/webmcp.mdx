@@ -22,7 +22,7 @@ Agents can:
 - See current outlines of elements and their geometry
 - Get your current playhead position and playback state
 - Play, pause and seek
-- Set timeline zoom, playback rate, and mute state
+- Set timeline zoom, playback rate, looping, and mute state
 - See, add and remove guides
 - Install packages into the current project
 - Transcribe audio and video assets
@@ -45,7 +45,10 @@ The shape of inputs and outputs is not currently stable.
 
 :::
 
-Tools that modify the timeline, playback or guides require a composition to be open.
+Tools that edit sequences or guides require a composition to be open.
+Playback tools work with compositions and, from <AvailableFrom v="4.0.540" inline />, audio and video asset previews after their metadata loads. Images, text files and rendered-output previews are not supported by playback tools.
+
+Playback tools run locally in all four Studio modes: regular, detached, read-only deployed and Browser Studio. They require a ready preview, not an attached Studio server.
 
 ### `install_package`<AvailableFrom v="4.0.523" />
 
@@ -328,6 +331,10 @@ The path to the JSX node within that source file, represented as an array of str
 
 Duplicates the source JSX node for a sequence using the same action as the Studio inspector.
 
+Studio selects the copied sequence roots once they are available in the preview. Changing the selection or switching away from the composition while duplication is pending prevents this automatic selection. If overlapping source refreshes make the copied nodes ambiguous, Studio preserves the current selection; select a copy after the preview finishes updating.
+
+A clip directly inside a [`<Track>`](/docs/track), including through anonymous fragments, is copied into a separate sibling track with its timing preserved. If an intervening element or expression prevents this, duplicate the enclosing track instead.
+
 Requires a composition to be open and source editing to be available in a connected interactive Studio or Browser Studio. Unavailable when the preview server is detached or the Studio is deployed as read-only. Transitions and sequences whose source is unavailable cannot be duplicated.
 
 ```ts title="Input"
@@ -475,7 +482,7 @@ Returns the measurable selectable component outlines active at the current frame
 
 ### `get_playback_state`
 
-Returns the current playhead, playback, audio, looping and timeline zoom state. Timeline zoom is normalized between `0` (fully zoomed out) and `1` (maximum zoom). Playback fields are `null` when the canvas is not showing a composition.
+Returns the current playhead, playback, audio, looping and timeline zoom state. Timeline zoom is normalized between `0` (fully zoomed out) and `1` (maximum zoom). Playback fields are `null` when the canvas shows other content or an asset preview is not ready. Audio and video asset previews are supported from <AvailableFrom v="4.0.540" inline />.
 
 ```ts title="Input"
 {
@@ -625,7 +632,7 @@ Removes a guide using an ID returned by `get_guides` or `add_guide`.
 
 ### `play`
 
-Starts playback from the current frame. Still compositions cannot be played.
+Starts playback from the current frame. Still compositions and asset previews with only one frame cannot be played.
 
 ```ts title="Input"
 {
@@ -634,10 +641,9 @@ Starts playback from the current frame. Still compositions cannot be played.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   playing: true;
 }
 ```
@@ -653,10 +659,9 @@ Pauses playback at the current frame.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   playing: false;
 }
 ```
@@ -672,10 +677,9 @@ Mutes audio playback.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   muted: true;
 }
 ```
@@ -691,17 +695,16 @@ Unmutes audio playback.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   muted: false;
 }
 ```
 
 ### `set_timeline_zoom`
 
-Sets the timeline zoom using a normalized value between `0` (fully zoomed out) and `1` (maximum zoom). The output contains the effective normalized zoom after Studio applies its supported zoom step. Still compositions do not have timeline zoom.
+Sets the timeline zoom using a normalized value between `0` (fully zoomed out) and `1` (maximum zoom). The output contains the effective normalized zoom after Studio applies its supported zoom step. Still compositions and asset previews with only one frame do not have timeline zoom.
 
 ```ts title="Input"
 {
@@ -709,15 +712,35 @@ Sets the timeline zoom using a normalized value between `0` (fully zoomed out) a
 }
 ```
 
-`zoom` must be a positive finite number.
+`zoom` must be a finite number between `0` and `1`, inclusive.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   timelineZoom: number;
+}
+```
+
+### `set_looping`<AvailableFrom v="4.0.540" />
+
+Enables or disables looping for the current composition or ready audio/video asset preview. Updates the Loop control immediately and saves the preference for subsequent previews. Returns an error if no supported preview is ready or it has only one frame.
+
+```ts title="Input"
+{
+  looping: boolean;
+}
+```
+
+`looping` is required.
+
+```ts title="Output"
+{
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
+  looping: boolean;
 }
 ```
 
@@ -744,10 +767,9 @@ Sets the playback multiplier. Negative values play backwards.
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   playbackRate: number;
 }
 ```
@@ -766,10 +788,9 @@ Seeks to a zero-based frame. Values beyond the duration are clamped to the final
 
 ```ts title="Output"
 {
-  currentContent: {
-    type: 'composition';
-    compositionId: string;
-  }
+  currentContent:
+    | {type: 'composition'; compositionId: string}
+    | {type: 'asset'; asset: string};
   currentFrame: number;
 }
 ```
@@ -787,12 +808,13 @@ You can ask a browser agent:
 - "Inspect the HTML rendered on the canvas."
 - "List the visible components and their canvas geometry."
 - "What is the current playback state?"
-- "Set the timeline zoom to 2.5x."
+- "Set the timeline zoom to 0.5."
 - "Seek to frame 90, set the playback rate to 0.5x and play."
 - "List the guides in the current composition."
 - "Hide the guides."
 - "Add a vertical guide at 640 pixels."
 - "Mute the preview."
+- "Turn off looping for the audio asset preview."
 - "Transcribe the audio asset that is currently open."
 - "Remove the background from `product-shot.mp4`."
 

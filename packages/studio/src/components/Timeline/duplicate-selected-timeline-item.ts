@@ -1,6 +1,11 @@
 import {useCallback, useMemo} from 'react';
 import type {SequenceNodePath} from 'remotion';
 import {canUseEffectOperations} from '../../helpers/browser-studio-operations';
+import {
+	beginDuplicatedElementSelection,
+	cancelDuplicatedElementSelection,
+	resolveDuplicatedElementSelection,
+} from '../../helpers/duplicated-element-selection';
 import type {SequenceNodePathInfo} from '../../helpers/get-timeline-sequence-sort-key';
 import {subscribeToSequenceNodePathMutations} from '../../helpers/sequence-node-path-mutations';
 import {useSyncExternalStore} from '../../helpers/use-sync-external-store';
@@ -115,6 +120,8 @@ export const duplicateSequencesFromSource = async (
 			originalKey: keys[index],
 		})),
 	};
+	const selectionRequest = beginDuplicatedElementSelection();
+	let copied = false;
 	pendingDuplications.add(pending);
 	const unsubscribeFromMutations = subscribeToSequenceNodePathMutations(
 		(mutation) => {
@@ -199,12 +206,23 @@ export const duplicateSequencesFromSource = async (
 			return {status: 'error', reason: result.reason};
 		}
 
+		copied = true;
+		resolveDuplicatedElementSelection(
+			selectionRequest,
+			result.nodePathMutation.mutationId,
+			result.duplicatedNodes,
+		);
+
 		return {status: 'success'};
 	} catch (err) {
 		const reason = (err as Error).message;
 		showNotification(reason, 4000);
 		return {status: 'error', reason};
 	} finally {
+		if (!copied) {
+			cancelDuplicatedElementSelection(selectionRequest);
+		}
+
 		notification?.dismiss();
 		unsubscribeFromMutations();
 		pendingDuplications.delete(pending);

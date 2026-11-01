@@ -100,6 +100,7 @@ const CurrentTimeInput: React.FC<{
 	return (
 		<InputDragger
 			ref={buttonRef}
+			onValueChangeCancel={null}
 			aria-label={String(frame)}
 			value={frame}
 			onTextChange={onTextChange}

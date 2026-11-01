@@ -13,6 +13,11 @@ import {getBrowserStudioOperations} from '../../helpers/browser-studio-operation
 import {useTimelineCalculator} from '../../helpers/calculate-timeline';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
 import {BACKGROUND} from '../../helpers/colors';
+import {
+	cancelDuplicatedElementSelection,
+	getDuplicatedElementSelection,
+	subscribeToDuplicatedElementSelection,
+} from '../../helpers/duplicated-element-selection';
 import type {TimelineTrackData} from '../../helpers/get-timeline-sequence-sort-key';
 import {
 	clearInsertedElementSelection,
@@ -534,6 +539,68 @@ const TimelineInner: React.FC = () => {
 		getInsertedElementSelection,
 	);
 	const currentSelection = useCurrentTimelineSelectionStateAsRef();
+	const duplicatedSelection = useSyncExternalStore(
+		subscribeToDuplicatedElementSelection,
+		getDuplicatedElementSelection,
+		getDuplicatedElementSelection,
+	);
+	useLayoutEffect(() => {
+		if (
+			duplicatedSelection === null ||
+			getDuplicatedElementSelection() !== duplicatedSelection
+		) {
+			return;
+		}
+
+		if (
+			canvasContent?.type !== 'composition' ||
+			canvasContent.compositionId !== duplicatedSelection.compositionId
+		) {
+			cancelDuplicatedElementSelection(duplicatedSelection.request);
+			return;
+		}
+
+		if (fastRefreshes <= duplicatedSelection.refreshAfter) {
+			return;
+		}
+
+		const targetKeys = new Set(
+			duplicatedSelection.nodes.map((node) =>
+				JSON.stringify([node.absolutePath, node.nodePath]),
+			),
+		);
+		const foundKeys = new Set<string>();
+		const items = timeline.flatMap((track) => {
+			if (track.nodePathInfo === null) {
+				return [];
+			}
+
+			const {absolutePath, nodePath} =
+				track.nodePathInfo.sequenceSubscriptionKey;
+			const key = JSON.stringify([absolutePath, nodePath]);
+			if (!targetKeys.has(key)) {
+				return [];
+			}
+
+			foundKeys.add(key);
+			return [{type: 'sequence' as const, nodePathInfo: track.nodePathInfo}];
+		});
+		if (foundKeys.size !== targetKeys.size) {
+			return;
+		}
+
+		cancelDuplicatedElementSelection(duplicatedSelection.request);
+		if (items.length > 0) {
+			currentSelection.current.selectItems(items, {reveal: true});
+		}
+	}, [
+		canvasContent,
+		currentSelection,
+		duplicatedSelection,
+		fastRefreshes,
+		timeline,
+	]);
+
 	useLayoutEffect(() => {
 		if (pendingInsertedElementSelection === null) {
 			pendingSelectionStart.current = null;

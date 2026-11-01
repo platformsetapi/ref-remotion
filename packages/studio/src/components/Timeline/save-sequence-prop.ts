@@ -3,6 +3,7 @@ import {
 	optimisticUpdateForPropStatuses,
 	type CaptionPatch,
 	type SaveSequencePropSourceEdit,
+	type SaveSequencePropsResponse,
 } from '@remotion/studio-shared';
 import type {
 	CanUpdateSequencePropsResponse,
@@ -16,7 +17,10 @@ import {
 	type MoveEffectKeyframeChange,
 	type MoveSequenceKeyframeChange,
 } from './call-move-keyframe';
-import {enqueueSavePropChange} from './save-prop-queue';
+import {
+	enqueueSavePropChange,
+	enqueueSavePropChangeWithResult,
+} from './save-prop-queue';
 
 export type SetPropStatuses = (
 	nodePath: SequencePropsSubscriptionKey,
@@ -102,15 +106,18 @@ export const saveInlineCaptionPatches = ({
 	});
 };
 
-export const saveSequenceProps = ({
-	changes,
-	addedKeyframes,
-	movedKeyframes,
-	setPropStatuses,
-	clientId,
-	undoLabel,
-	redoLabel,
-}: SaveSequencePropsOptions): Promise<void> => {
+const saveSequencePropsInternal = (
+	{
+		changes,
+		addedKeyframes,
+		movedKeyframes,
+		setPropStatuses,
+		clientId,
+		undoLabel,
+		redoLabel,
+	}: SaveSequencePropsOptions,
+	reportResult: boolean,
+): Promise<SaveSequencePropsResponse | void> => {
 	const keyframesToAdd = addedKeyframes === null ? [] : addedKeyframes;
 	const sequenceKeyframes =
 		movedKeyframes === null ? [] : movedKeyframes.sequenceKeyframes;
@@ -136,7 +143,10 @@ export const saveSequenceProps = ({
 			throw new Error('Expected a sequence prop change');
 		}
 
-		return enqueueSavePropChange({
+		const enqueue = reportResult
+			? enqueueSavePropChangeWithResult
+			: enqueueSavePropChange;
+		return enqueue({
 			nodePath: change.nodePath,
 			setPropStatuses,
 			// Font edits prepare their assets inside the source-mutation queue.
@@ -261,5 +271,15 @@ export const saveSequenceProps = ({
 		clientId,
 		undoLabel,
 		redoLabel,
-	}).then(() => undefined);
+	});
 };
+
+export const saveSequenceProps = (
+	options: SaveSequencePropsOptions,
+): Promise<void> =>
+	saveSequencePropsInternal(options, false).then(() => undefined);
+
+export const saveSequencePropsWithResult = (
+	options: SaveSequencePropsOptions,
+): Promise<SaveSequencePropsResponse | null> =>
+	saveSequencePropsInternal(options, true).then((result) => result ?? null);
