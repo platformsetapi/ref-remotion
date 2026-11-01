@@ -328,6 +328,10 @@ The path to the JSX node within that source file, represented as an array of str
 
 Duplicates the source JSX node for a sequence using the same action as the Studio inspector.
 
+Studio selects the copied sequence roots once they are available in the preview. Changing the selection or switching away from the composition while duplication is pending prevents this automatic selection. If overlapping source refreshes make the copied nodes ambiguous, Studio preserves the current selection; select a copy after the preview finishes updating.
+
+A clip directly inside a [`<Track>`](/docs/track), including through anonymous fragments, is copied into a separate sibling track with its timing preserved. If an intervening element or expression prevents this, duplicate the enclosing track instead.
+
 Requires a composition to be open and source editing to be available in a connected interactive Studio or Browser Studio. Unavailable when the preview server is detached or the Studio is deployed as read-only. Transitions and sequences whose source is unavailable cannot be duplicated.
 
 ```ts title="Input"

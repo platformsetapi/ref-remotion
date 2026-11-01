@@ -1429,7 +1429,14 @@ export const createBrowserStudioOperations = ({
 				throw new Error('Could not duplicate JSX node');
 			}
 
-			return {success: true, nodePathMutation};
+			return {
+				success: true,
+				nodePathMutation,
+				duplicatedNodes: result.duplicatedNodes.map(({filePath, nodePath}) => ({
+					absolutePath: filePath,
+					nodePath,
+				})),
+			};
 		} catch (error) {
 			return getStructuredError(error);
 		}

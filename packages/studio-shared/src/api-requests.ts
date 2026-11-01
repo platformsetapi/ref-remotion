@@ -964,6 +964,7 @@ export type DuplicateNodesResponse =
 	| {
 			success: true;
 			nodePathMutation: SequenceNodePathMutation;
+			duplicatedNodes: {absolutePath: string; nodePath: SequenceNodePath}[];
 	  }
 	| {
 			success: false;

@@ -27,6 +27,7 @@ const envelopes = new Set([
 	'sequenceKeyframes',
 	'effectKeyframes',
 	'nodes',
+	'duplicatedNodes',
 	'sequences',
 	'captionTarget',
 	'results',

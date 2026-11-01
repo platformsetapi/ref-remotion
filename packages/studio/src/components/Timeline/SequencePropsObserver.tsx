@@ -12,6 +12,7 @@ import type {
 import {Internals} from 'remotion';
 import {FastRefreshContext} from '../../fast-refresh-context';
 import {StudioServerConnectionCtx} from '../../helpers/client-id';
+import {markDuplicationSelectionMutationsApplied} from '../../helpers/duplicated-element-selection';
 import {takePendingSequenceNodePathMutations} from '../../helpers/sequence-node-path-mutations';
 import {
 	reconcileCanvasDragPreviewStatuses,
@@ -104,6 +105,8 @@ export const SequencePropsObserver = ({
 		if (mutations.length === 0) {
 			return;
 		}
+
+		markDuplicationSelectionMutationsApplied(mutations, fastRefreshes);
 
 		remapCanvasDragPreviews(
 			{updateDragOverrides, remapDragOverrideFields},

@@ -45,6 +45,10 @@ import {
 	WHITE_ALPHA_10,
 	WHITE_ALPHA_80,
 } from '../../helpers/colors';
+import {
+	invalidateDuplicatedElementSelection,
+	setDuplicationSelectionComposition,
+} from '../../helpers/duplicated-element-selection';
 import type {
 	SequenceNodePathInfo,
 	TimelineTrackData,
@@ -1189,6 +1193,10 @@ export const TimelineSelectionProvider: React.FC<{
 	const {canvasContent} = useContext(Internals.CompositionManager);
 	const timelineSelectionScope =
 		canvasContent?.type === 'composition' ? canvasContent.compositionId : null;
+	useLayoutEffect(() => {
+		setDuplicationSelectionComposition(timelineSelectionScope);
+		return () => setDuplicationSelectionComposition(null);
+	}, [timelineSelectionScope]);
 	const {expandParentTracks} = useContext(ExpandedTracksSetterContext);
 	const {setRightSidebarTemporaryExpansion, sidebarCollapsedStateRight} =
 		useContext(SidebarContext);
@@ -1363,6 +1371,8 @@ export const TimelineSelectionProvider: React.FC<{
 				return;
 			}
 
+			invalidateDuplicatedElementSelection();
+
 			selectOptionsSidebarInspectorPanel();
 			expandParentsForSelectionItem(item);
 			if (options.reveal) {
@@ -1402,6 +1412,8 @@ export const TimelineSelectionProvider: React.FC<{
 			if (!items.every(canSelectItem)) {
 				return;
 			}
+
+			invalidateDuplicatedElementSelection();
 
 			if (items.length > 0) {
 				selectOptionsSidebarInspectorPanel();
@@ -1468,6 +1480,7 @@ export const TimelineSelectionProvider: React.FC<{
 	}, [canSelectItem]);
 
 	const clearSelection = useCallback(() => {
+		invalidateDuplicatedElementSelection();
 		selectionScope.current = null;
 		setInspectorRevealRequest(null);
 		setRevealRequest(null);
