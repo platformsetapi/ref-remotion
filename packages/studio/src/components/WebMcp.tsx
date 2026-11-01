@@ -8,7 +8,11 @@ import {
 	type FC,
 	type MutableRefObject,
 } from 'react';
-import {Internals, staticFile} from 'remotion';
+import {
+	Internals,
+	staticFile,
+	type SequencePropsSubscriptionKey,
+} from 'remotion';
 import {installPackages} from '../api/install-package';
 import {pause} from '../api/pause';
 import {play} from '../api/play';
@@ -62,6 +66,7 @@ import {
 } from './RenderQueue/context';
 import {useRenderJobRetry} from './RenderQueue/render-retry';
 import {measureOutlineTargets} from './selected-outline-measurement';
+import {getPendingTimelineTimingEdits} from './Timeline/commit-timeline-timing-edit';
 import {
 	deleteEffectsFromSource,
 	getPendingEffectDeletions,
@@ -72,6 +77,11 @@ import {
 	getPendingSequenceDuplications,
 	isSequenceDuplicationPending,
 } from './Timeline/duplicate-selected-timeline-item';
+import {
+	canEditTimelineTiming,
+	moveTimelineSequences,
+	trimTimelineSequence,
+} from './Timeline/edit-timeline-timing';
 import {getCurrentDuration, getCurrentFrame} from './Timeline/imperative-state';
 import {parseKeyframeFieldFromNodePath} from './Timeline/parse-keyframe-field-from-node-path';
 import {
@@ -318,6 +328,7 @@ export const WebMcp: FC = () => {
 	const propStatusesRef = useContext(
 		Internals.VisualModePropStatusesRefContext,
 	);
+	const visualModeSetters = useContext(Internals.VisualModeSettersContext);
 	const {overrideIdToNodePathMappings} = useContext(
 		Internals.OverrideIdsToNodePathsGettersContext,
 	);
@@ -437,6 +448,34 @@ export const WebMcp: FC = () => {
 			}).tracks.filter((timelineTrack) =>
 				shouldShowTrackInTimeline(timelineTrack, durationInFrames),
 			);
+		};
+
+		const getTimelineTimingContext = () => {
+			if (currentCompositionDefinitionRef.current === null) {
+				throw new Error('No composition is currently selected.');
+			}
+
+			if (!timelineSelectionRef.current.canSelect || !canEditTimelineTiming()) {
+				throw new Error('Studio source editing is unavailable.');
+			}
+
+			return {
+				tracks: calculateTimeline({
+					sequences: sequencesRef.current,
+					overrideIdsToNodePaths: overrideIdToNodePathMappingsRef.current,
+					compositions: compositionsRef.current,
+					showConnectedCompositionChildren: compactSeriesRef.current,
+				}).tracks,
+				sequences: sequencesRef.current,
+				propStatuses: propStatusesRef.current,
+				overrideIdsToNodePaths: overrideIdToNodePathMappingsRef.current,
+				timelineDurationInFrames: getCurrentDuration(),
+				visualModeSetters,
+				getPropStatuses: (nodePath: SequencePropsSubscriptionKey) =>
+					propStatusesRef.current[
+						Internals.makeSequencePropsSubscriptionKey(nodePath)
+					],
+			};
 		};
 
 		Promise.all([
@@ -1061,7 +1100,7 @@ export const WebMcp: FC = () => {
 					name: 'get_sequences',
 					title: 'Get Studio sequences',
 					description:
-						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, effects, source stack, selection availability, and pending duplication, splitting, or effect deletion. Pending operations include source nodes that are temporarily unmounted during refresh.',
+						'Read the mounted sequences in the current Remotion Studio timeline, including their IDs, hierarchy, timing, effects, source stack, selection availability, and pending timing edits, duplication, splitting, or effect deletion. Pending operations include source nodes that are temporarily unmounted during refresh.',
 					inputSchema: {
 						type: 'object',
 						properties: {},
@@ -1085,6 +1124,7 @@ export const WebMcp: FC = () => {
 							canUseEffectOperations();
 						return Promise.resolve({
 							currentContent: currentContentRef.current,
+							pendingTimingEdits: getPendingTimelineTimingEdits(),
 							pendingDuplications: getPendingSequenceDuplications(),
 							pendingSplits: getPendingSequenceSplits().map(
 								({absolutePath, nodePath, splitFrame}) => ({
@@ -1154,6 +1194,120 @@ export const WebMcp: FC = () => {
 											};
 										}),
 						});
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'move_sequences',
+					title: 'Move Studio sequences',
+					description:
+						'Move specified sequences together by a number of composition frames using the timeline action. Preserves the playhead and selection. Validates the whole batch before editing, adjusts affected animations, and clamps the move to the timeline limits. Success means the source was saved; the preview may still be refreshing.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							sequenceIds: {
+								type: 'array',
+								items: {type: 'string', minLength: 1},
+								minItems: 1,
+								uniqueItems: true,
+								description: 'Unique sequence IDs returned by get_sequences.',
+							},
+							deltaFrames: {
+								type: 'integer',
+								description:
+									'The requested offset in composition frames. Negative values move earlier.',
+							},
+						},
+						required: ['sequenceIds', 'deltaFrames'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({sequenceIds, deltaFrames}) => {
+						if (
+							!Array.isArray(sequenceIds) ||
+							sequenceIds.length === 0 ||
+							sequenceIds.some(
+								(id) => typeof id !== 'string' || id.length === 0,
+							)
+						) {
+							throw new Error(
+								'sequenceIds must be a non-empty array of non-empty strings.',
+							);
+						}
+
+						if (new Set(sequenceIds).size !== sequenceIds.length) {
+							throw new Error('sequenceIds must not contain duplicates.');
+						}
+
+						if (
+							typeof deltaFrames !== 'number' ||
+							!Number.isInteger(deltaFrames)
+						) {
+							throw new Error('deltaFrames must be an integer.');
+						}
+
+						const result = await moveTimelineSequences({
+							sequenceIds,
+							deltaFrames,
+							context: getTimelineTimingContext(),
+						});
+						return {sequenceIds, deltaFrames, ...result};
+					},
+				},
+				{signal: controller.signal},
+			),
+			modelContext.registerTool(
+				{
+					name: 'trim_sequence',
+					title: 'Trim Studio sequence',
+					description:
+						'Move one sequence start or end boundary to an absolute composition frame using the timeline action. The end frame is exclusive. Preserves the playhead and selection, applies the timeline trim limits, and reports whether the request was clamped. Success means the source was saved; the preview may still be refreshing.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							sequenceId: {
+								type: 'string',
+								minLength: 1,
+								description: 'The sequence ID returned by get_sequences.',
+							},
+							edge: {
+								type: 'string',
+								enum: ['start', 'end'],
+								description: 'The timeline edge to trim.',
+							},
+							frame: {
+								type: 'integer',
+								minimum: 0,
+								description:
+									'The requested absolute composition boundary, from 0 through the composition duration. For end, use the first frame after the clip.',
+							},
+						},
+						required: ['sequenceId', 'edge', 'frame'],
+						additionalProperties: false,
+					},
+					annotations: {readOnlyHint: false},
+					execute: async ({sequenceId, edge, frame}) => {
+						if (typeof sequenceId !== 'string' || sequenceId.length === 0) {
+							throw new Error('sequenceId must be a non-empty string.');
+						}
+
+						if (edge !== 'start' && edge !== 'end') {
+							throw new Error('edge must be start or end.');
+						}
+
+						if (typeof frame !== 'number' || !Number.isInteger(frame)) {
+							throw new Error('frame must be an integer.');
+						}
+
+						const result = await trimTimelineSequence({
+							sequenceId,
+							edge,
+							frame,
+							context: getTimelineTimingContext(),
+						});
+						return {sequenceId, edge, frame, ...result};
 					},
 				},
 				{signal: controller.signal},
@@ -2353,6 +2507,7 @@ export const WebMcp: FC = () => {
 		setPlayerMuted,
 		setTimelineZoom,
 		timelineSelectionRef,
+		visualModeSetters,
 	]);
 
 	return (

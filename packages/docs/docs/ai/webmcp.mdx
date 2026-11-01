@@ -15,7 +15,7 @@ Agents can:
 
 - See which items you currently have selected
 - See selectable items and select them
-- Duplicate or split sequences and inspect pending edits
+- Move, trim, duplicate or split sequences and inspect pending edits
 - See available compositions and navigate to them
 - Inspect render jobs, cancel queued or running renders, and reopen saved render settings
 - Read the error currently shown in the Studio error overlay
@@ -446,6 +446,14 @@ Returns the timeline sequences mounted for the current composition, including th
 ```ts title="Output"
 {
   currentContent: CurrentContent | null;
+  pendingTimingEdits: Array<{
+    id: number;
+    operation: 'move' | 'trim-start' | 'trim-end' | 'slip-source';
+    nodes: Array<{
+      absolutePath: string;
+      nodePath: Array<string | number>;
+    }>;
+  }>;
   pendingDuplications: Array<{
     absolutePath: string;
     nodePath: Array<string | number>;
@@ -483,6 +491,30 @@ Returns the timeline sequences mounted for the current composition, including th
   }>;
 }
 ```
+
+#### `pendingTimingEdits`<AvailableFrom v="4.0.540" />
+
+Timing edits awaiting a save response in this Studio tab, including edits started through the timeline or WebMCP. The preview updates immediately. A request leaves this list when it succeeds or fails; an empty list does not guarantee the preview has finished refreshing. Later edits can supersede an earlier preview while its request remains pending.
+
+##### `id`
+
+An identifier for the pending request within the current Studio tab.
+
+##### `operation`
+
+`move`, `trim-start`, `trim-end`, or `slip-source`. Source slipping is available through the timeline; the tools below expose moving and start/end trimming.
+
+##### `nodes`
+
+The source nodes affected by the request, including nodes temporarily unmounted during refresh.
+
+###### `absolutePath`
+
+The source file's absolute path.
+
+###### `nodePath`
+
+The path to the source JSX node, represented as an array of strings and numbers.
 
 #### `sequences[].duplicating`<AvailableFrom v="4.0.540" />
 
@@ -563,6 +595,142 @@ The path to the JSX node within that source file, represented as an array of str
 ##### `effectIndices`
 
 The zero-based effect indices in the chain before the deletion started. These indices do not refer to the remaining effects after the preview refreshes.
+
+### `move_sequences`<AvailableFrom v="4.0.540" />
+
+Moves specified sequences together using the timeline's timing action. The playhead and selection stay unchanged. The preview updates immediately, and a failed save restores the affected fields without undoing newer edits.
+
+Requires an open composition and editable source in a connected interactive Studio or an initialized Browser Studio. Unavailable in detached and read-only deployed Studios, and while Browser Studio is still connecting.
+
+```ts title="Input"
+{
+  sequenceIds: string[];
+  deltaFrames: number;
+}
+```
+
+#### `sequenceIds`
+
+Required. A non-empty array of unique IDs from `get_sequences`. All targets and affected animation sources are checked before editing. An unknown ID, unavailable source, unsupported timing, or programmatically repeated source node makes the entire batch ineligible; no clips are moved.
+
+Selecting a parent and its descendant moves the parent once. Affected sequence and effect animations follow the same timing rules as a timeline drag.
+
+#### `deltaFrames`
+
+Required. An integer offset in composition frames. Negative values move earlier. Studio converts the offset to each source clock and applies the timeline's parent, neighboring-clip and composition limits. The result reports the applied offset if the request was clamped.
+
+```ts title="Output"
+{
+  sequenceIds: string[];
+  deltaFrames: number;
+  status: 'success' | 'no-op' | 'ineligible' | 'error';
+  reason: string | null;
+  changes: Array<{
+    absolutePath: string;
+    nodePath: Array<string | number>;
+    fieldKey: string;
+    value: unknown;
+  }>;
+  clamped: boolean;
+  appliedDeltaFrames: number | null;
+  appliedFrame: number | null;
+}
+```
+
+#### `status`
+
+`success` means the timing edit was saved to source; the preview may still be refreshing. `no-op` means no source change was needed, including a move constrained to the current position. `ineligible` means the targets cannot be edited together. `error` means the save failed.
+
+Malformed inputs, a missing composition, or unavailable source editing reject the tool call before an edit starts.
+
+#### `reason`
+
+The explanation for an ineligible or failed edit, otherwise `null`.
+
+#### `changes`
+
+The timing-property changes made by the action. Related sequence and effect keyframe moves can also be saved. Empty for an ineligible or failed edit, or when no source change was needed. Read `get_sequences` again for the resulting timeline timing.
+
+##### `absolutePath`
+
+The edited source file's absolute path.
+
+##### `nodePath`
+
+The path to the edited source JSX node.
+
+##### `fieldKey`
+
+The source property being changed, such as `from` or `durationInFrames`.
+
+##### `value`
+
+The value written to that property, in its source clock. It can differ from the composition-frame input.
+
+#### `clamped`
+
+Whether timing limits changed the requested move.
+
+#### `appliedDeltaFrames`
+
+The applied offset in composition frames, or `null` for an ineligible or failed edit.
+
+#### `appliedFrame`
+
+Always `null` for a move. This field is used by `trim_sequence`.
+
+### `trim_sequence`<AvailableFrom v="4.0.540" />
+
+Trims one sequence's start or end using the timeline's timing action. It preserves the playhead and selection and uses the same optimistic updates, failure recovery and mode restrictions as `move_sequences`.
+
+```ts title="Input"
+{
+  sequenceId: string;
+  edge: 'start' | 'end';
+  frame: number;
+}
+```
+
+#### `sequenceId`
+
+Required. An ID from `get_sequences`. Missing or stale source metadata, programmatically repeated source nodes and unsupported timing are ineligible; no edit starts.
+
+#### `edge`
+
+Required. `start` changes the in-point while preserving the right edge and adjusting the source start where needed to preserve the media's position. `end` changes the out-point. This tool does not perform a source-only slip, ripple or rolling edit; clips requiring those operations are ineligible.
+
+#### `frame`
+
+Required. The requested absolute composition boundary as an integer from `0` through the composition's `durationInFrames`. The end boundary is exclusive: a clip starting at frame `120` with duration `60` ends at boundary `180`, while `get_sequences.endFrame` is `179`.
+
+The timeline's media, keyframe, parent and neighboring-clip limits apply. A boundary outside the composition is ineligible. A boundary within the composition but beyond a clip's limits is clamped.
+
+```ts title="Output"
+{
+  sequenceId: string;
+  edge: 'start' | 'end';
+  frame: number;
+  status: 'success' | 'no-op' | 'ineligible' | 'error';
+  reason: string | null;
+  changes: Array<{
+    absolutePath: string;
+    nodePath: Array<string | number>;
+    fieldKey: string;
+    value: unknown;
+  }>;
+  clamped: boolean;
+  appliedDeltaFrames: number | null;
+  appliedFrame: number | null;
+}
+```
+
+#### `appliedFrame`
+
+The resulting absolute composition boundary, or `null` for an ineligible or failed edit. `frame` echoes the requested boundary.
+
+#### `appliedDeltaFrames`
+
+The applied movement of the edge in composition frames, or `null` for an ineligible or failed edit. The remaining result fields have the same meanings as for `move_sequences`; `clamped` reports whether the requested boundary was constrained.
 
 ### `split_sequences`<AvailableFrom v="4.0.540" />
 
