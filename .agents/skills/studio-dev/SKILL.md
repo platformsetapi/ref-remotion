@@ -31,6 +31,9 @@ and [optimistic composition metadata](../../../packages/studio/src/components/In
   incomplete until an agent can invoke the same action. Follow the existing
   registrations in [WebMcp.tsx](../../../packages/studio/src/components/WebMcp.tsx)
   and the relevant feature's tools.
+- Document every new WebMCP tool and changes to its inputs or outputs in the
+  [WebMCP documentation](../../../packages/docs/docs/ai/webmcp.mdx), including
+  pending state, results, and mode availability.
 - Every edit must work interactively, agentically, and by editing code. UI and
   WebMCP edits must persist through the same source mutation/history path, and
   direct code changes must appear correctly after hot reload. Avoid separate

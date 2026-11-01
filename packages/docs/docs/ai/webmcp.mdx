@@ -15,6 +15,7 @@ Agents can:
 
 - See which items you currently have selected
 - See selectable items and select them
+- Duplicate sequences and inspect duplication progress
 - See available compositions and navigate to them
 - Read the error currently shown in the Studio error overlay
 - Get the current HTML of your composition
@@ -287,6 +288,10 @@ Returns the timeline sequences mounted for the current composition, including th
 ```ts title="Output"
 {
   currentContent: CurrentContent | null;
+  pendingDuplications: Array<{
+    absolutePath: string;
+    nodePath: Array<string | number>;
+  }>;
   sequences: Array<{
     sequenceId: string;
     name: string | null;
@@ -298,9 +303,70 @@ Returns the timeline sequences mounted for the current composition, including th
     durationInFrames: number;
     stack: string | null;
     selectable: boolean;
+    duplicating: boolean;
   }>;
 }
 ```
+
+#### `sequences[].duplicating`<AvailableFrom v="4.0.540" />
+
+Whether a duplication of this sequence's source node is pending. This includes duplications started through the Studio interface or `duplicate_sequence`.
+
+#### `pendingDuplications`<AvailableFrom v="4.0.540" />
+
+Source nodes with a pending duplication in the current Studio tab, including nodes that are temporarily unmounted during a preview refresh. An empty array reports no pending source nodes; it does not mean the preview has finished refreshing.
+
+##### `absolutePath`
+
+The absolute path of the source file.
+
+##### `nodePath`
+
+The path to the JSX node within that source file, represented as an array of strings and numbers.
+
+### `duplicate_sequence`<AvailableFrom v="4.0.540" />
+
+Duplicates the source JSX node for a sequence using the same action as the Studio inspector.
+
+Requires a composition to be open and source editing to be available in a connected interactive Studio or Browser Studio. Unavailable when the preview server is detached or the Studio is deployed as read-only. Transitions and sequences whose source is unavailable cannot be duplicated.
+
+```ts title="Input"
+{
+  sequenceId: string;
+  confirmProgrammaticDuplication: boolean;
+}
+```
+
+#### `sequenceId`
+
+Required. The ID of a sequence returned by `get_sequences`.
+
+#### `confirmProgrammaticDuplication`
+
+Required. When one source node produces multiple runtime instances, copying it creates a copy for every instance. Set `true` to confirm this behavior. Set `false` to cancel duplication of programmatically repeated nodes. A single-instance node is duplicated with either value.
+
+```ts title="Output"
+{sequenceId: string} & (
+  | {status: 'success'}
+  | {status: 'already-pending'}
+  | {status: 'cancelled'}
+  | {status: 'error'; reason: string}
+)
+```
+
+#### `status`
+
+`success` means the source copy was saved. The preview may still be refreshing; new sequence IDs appear in `get_sequences` afterward.
+
+`already-pending` means a duplication of this source node is already in progress. No additional copy was requested.
+
+`cancelled` means no copy was requested, for example because a programmatically repeated node was not confirmed.
+
+`error` means duplication failed. Invalid inputs, unavailable source editing, and missing or unsupported sequences reject the tool call before duplication starts.
+
+#### `reason`
+
+The failure message, present when `status` is `error`.
 
 ### `select_sequence`
 
@@ -717,6 +783,7 @@ You can ask a browser agent:
 - "List all mounted compositions and their folders."
 - "Open the `Shapes` composition."
 - "List the sequences and select the `Title` sequence."
+- "Duplicate the `Title` sequence."
 - "Inspect the HTML rendered on the canvas."
 - "List the visible components and their canvas geometry."
 - "What is the current playback state?"

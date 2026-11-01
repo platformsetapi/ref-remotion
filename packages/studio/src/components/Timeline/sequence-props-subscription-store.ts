@@ -157,6 +157,7 @@ export const acquireSequencePropsSubscription = ({
 				}
 
 				current.applyOnce = null;
+				entries.delete(key);
 				Internals.Log.error(err);
 			});
 	}
