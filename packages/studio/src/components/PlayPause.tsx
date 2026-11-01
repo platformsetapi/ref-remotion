@@ -2,6 +2,7 @@ import {PlayerInternals} from '@remotion/player';
 import React, {useCallback, useContext, useEffect, useState} from 'react';
 import {Internals} from 'remotion';
 import {useIsStill} from '../helpers/is-current-selected-still';
+import {isKeyboardEventOwnedByControl} from '../helpers/is-keyboard-event-owned-by-control';
 import {useKeybinding} from '../helpers/use-keybinding';
 import {
 	useKeyboardShortcutAriaKeyShortcuts,
@@ -105,19 +106,34 @@ const PlayPauseInner: React.FC<{
 
 	const onSpace = useCallback(
 		(e: KeyboardEvent) => {
+			if (
+				e.defaultPrevented ||
+				e.isComposing ||
+				isKeyboardEventOwnedByControl(e)
+			)
+				return;
+
+			e.preventDefault();
+			if (e.repeat) return;
+
 			if (playing) {
 				pause();
 			} else {
 				play();
 			}
-
-			e.preventDefault();
 		},
 		[pause, play, playing],
 	);
 
 	const onEnter = useCallback(
 		(e: KeyboardEvent) => {
+			if (
+				e.defaultPrevented ||
+				e.isComposing ||
+				isKeyboardEventOwnedByControl(e)
+			)
+				return;
+
 			if (playing) {
 				// Don't prevent keyboard navigation
 				e.preventDefault();
@@ -216,7 +232,7 @@ const PlayPauseInner: React.FC<{
 			event: 'keydown',
 			action: 'playPause',
 			callback: onSpace,
-			preventDefault: true,
+			preventDefault: false,
 			triggerIfInputFieldFocused: false,
 			keepRegisteredWhenNotHighestContext: false,
 		});
