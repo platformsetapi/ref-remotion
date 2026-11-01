@@ -40,6 +40,7 @@ import {showNotification} from '../Notifications/NotificationCenter';
 import {SplitterContainer} from '../Splitter/SplitterContainer';
 import {SplitterElement} from '../Splitter/SplitterElement';
 import {SplitterHandle} from '../Splitter/SplitterHandle';
+import {reconcilePendingSequenceSplits} from './pending-sequence-splits';
 import {SequencePropsObserver} from './SequencePropsObserver';
 import {shouldShowTrackInTimeline} from './should-show-track-in-timeline';
 import {shouldSubscribeToSequenceProps} from './should-subscribe-to-sequence-props';
@@ -518,6 +519,15 @@ const TimelineInner: React.FC = () => {
 		compactSeries,
 	);
 	const {fastRefreshes} = useContext(FastRefreshContext);
+	useLayoutEffect(() => {
+		reconcilePendingSequenceSplits({
+			tracks: timeline,
+			compositionId:
+				canvasContent?.type === 'composition'
+					? canvasContent.compositionId
+					: null,
+		});
+	}, [canvasContent, timeline]);
 	const pendingSelectionStart = useRef<{
 		selection: PendingInsertedElementSelection;
 		fastRefreshes: number;

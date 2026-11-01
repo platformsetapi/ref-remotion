@@ -37,12 +37,12 @@ import {
 	forceSpecificCursor,
 	stopForcingSpecificCursor,
 } from '../ForceSpecificCursor';
-import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import type {
 	MoveEffectKeyframeChange,
 	MoveSequenceKeyframeChange,
 } from './call-move-keyframe';
+import {commitTimelineTimingEdit} from './commit-timeline-timing-edit';
 import {
 	createTrackLookupForNodePathInfo,
 	findTrackForNodePathInfo,
@@ -65,10 +65,7 @@ import {
 	TIMELINE_TRIM_HANDLE_WIDTH,
 	type getTimelineTrimHandleLayout,
 } from './get-timeline-trim-handle-layout';
-import {
-	saveSequencePropsWithResult,
-	type SaveSequencePropChange,
-} from './save-sequence-prop';
+import {type SaveSequencePropChange} from './save-sequence-prop';
 import {
 	getTimelineTrimLimitReason,
 	getVisibleTimelineTrimLimitReason,
@@ -2176,22 +2173,12 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 			return;
 		}
 
-		const currentChanges = changes.map((change) => {
-			const nodePath = dragState.preview.getNodePath(change.nodePath);
-			return nodePath === null
-				? null
-				: {...change, nodePath, fileName: nodePath.absolutePath};
-		});
-		if (currentChanges.some((change) => change === null)) {
-			dragState.preview.cancel();
-			return;
-		}
-
-		const savePromise = saveSequencePropsWithResult({
-			addedKeyframes: null,
+		commitTimelineTimingEdit({
+			preview: dragState.preview,
+			operation:
+				dragState.mode === 'source-only' ? 'slip-source' : 'trim-start',
 			movedKeyframes: null,
-			changes: currentChanges.filter(NoReactInternals.truthy),
-			setPropStatuses: dragState.preview.setPropStatuses,
+			changes,
 			clientId: latestServerState.clientId,
 			undoLabel:
 				dragState.mode === 'rolling'
@@ -2214,24 +2201,6 @@ const TimelineSequenceLeftEdgeDragHandleInner: React.FC<{
 							? 'Resize selected sequences back'
 							: 'Resize sequence back',
 		});
-
-		savePromise
-			.then((response) => {
-				if (response && !response.canUpdate) {
-					throw new Error(
-						'The layer could not be updated. Try the edit again.',
-					);
-				}
-
-				dragState.preview.acknowledge(response);
-			})
-			.catch((error) => {
-				dragState.preview.fail();
-				showNotification(
-					`Could not resize sequence: ${error instanceof Error ? error.message : String(error)}`,
-					4000,
-				);
-			});
 	}, []);
 
 	const onPointerDown = useCallback(
@@ -2976,28 +2945,14 @@ export const useTimelineSequenceFromDrag = ({
 				return;
 			}
 
-			const withCurrentNodePath = <
-				T extends {nodePath: SequencePropsSubscriptionKey; fileName: string},
-			>(
-				change: T,
-			): T | null => {
-				const nodePath = dragState.preview.getNodePath(change.nodePath);
-				return nodePath === null
-					? null
-					: {...change, nodePath, fileName: nodePath.absolutePath};
-			};
-
-			const currentChanges = changes.map(withCurrentNodePath);
-			const currentSequenceKeyframes =
-				keyframeMoves.sequenceKeyframes.map(withCurrentNodePath);
-			const currentEffectKeyframes =
-				keyframeMoves.effectKeyframes.map(withCurrentNodePath);
 			if (
 				[
-					...currentChanges,
-					...currentSequenceKeyframes,
-					...currentEffectKeyframes,
-				].some((change) => change === null)
+					...changes,
+					...keyframeMoves.sequenceKeyframes,
+					...keyframeMoves.effectKeyframes,
+				].some(
+					(change) => dragState.preview.getNodePath(change.nodePath) === null,
+				)
 			) {
 				dragState.preview.cancel();
 				return;
@@ -3030,18 +2985,14 @@ export const useTimelineSequenceFromDrag = ({
 				);
 			}
 
-			const savePromise = saveSequencePropsWithResult({
-				addedKeyframes: null,
-				changes: currentChanges.filter(NoReactInternals.truthy),
+			commitTimelineTimingEdit({
+				preview: dragState.preview,
+				operation: 'move',
+				changes,
 				movedKeyframes: {
-					sequenceKeyframes: currentSequenceKeyframes.filter(
-						NoReactInternals.truthy,
-					),
-					effectKeyframes: currentEffectKeyframes.filter(
-						NoReactInternals.truthy,
-					),
+					sequenceKeyframes: keyframeMoves.sequenceKeyframes,
+					effectKeyframes: keyframeMoves.effectKeyframes,
 				},
-				setPropStatuses: dragState.preview.setPropStatuses,
 				clientId: latestServerState.clientId,
 				undoLabel:
 					dragState.targets.length > 1
@@ -3052,24 +3003,6 @@ export const useTimelineSequenceFromDrag = ({
 						? 'Move selected sequences back'
 						: 'Move sequence back',
 			});
-
-			savePromise
-				.then((response) => {
-					if (response && !response.canUpdate) {
-						throw new Error(
-							'The layer could not be updated. Try the edit again.',
-						);
-					}
-
-					dragState.preview.acknowledge(response);
-				})
-				.catch((error) => {
-					dragState.preview.fail();
-					showNotification(
-						`Could not move sequence: ${error instanceof Error ? error.message : String(error)}`,
-						4000,
-					);
-				});
 		},
 		[clearDraggedKeyframes, currentSelection, updateSnapFrameRef],
 	);
@@ -3444,22 +3377,11 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 			return;
 		}
 
-		const currentChanges = changes.map((change) => {
-			const nodePath = dragState.preview.getNodePath(change.nodePath);
-			return nodePath === null
-				? null
-				: {...change, nodePath, fileName: nodePath.absolutePath};
-		});
-		if (currentChanges.some((change) => change === null)) {
-			dragState.preview.cancel();
-			return;
-		}
-
-		const savePromise = saveSequencePropsWithResult({
-			addedKeyframes: null,
+		commitTimelineTimingEdit({
+			preview: dragState.preview,
+			operation: 'trim-end',
 			movedKeyframes: null,
-			changes: currentChanges.filter(NoReactInternals.truthy),
-			setPropStatuses: dragState.preview.setPropStatuses,
+			changes,
 			clientId: latestServerState.clientId,
 			undoLabel:
 				changes.length > 1 ? 'Resize selected sequences' : 'Resize sequence',
@@ -3468,24 +3390,6 @@ const TimelineSequenceRightEdgeDragHandleInner: React.FC<{
 					? 'Resize selected sequences back'
 					: 'Resize sequence back',
 		});
-
-		savePromise
-			.then((response) => {
-				if (response && !response.canUpdate) {
-					throw new Error(
-						'The layer could not be updated. Try the edit again.',
-					);
-				}
-
-				dragState.preview.acknowledge(response);
-			})
-			.catch((error) => {
-				dragState.preview.fail();
-				showNotification(
-					`Could not resize sequence: ${error instanceof Error ? error.message : String(error)}`,
-					4000,
-				);
-			});
 	}, []);
 
 	const onPointerDown = useCallback(

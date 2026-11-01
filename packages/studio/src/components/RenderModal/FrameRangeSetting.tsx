@@ -57,7 +57,7 @@ export const FrameRangeSetting: React.FC<{
 					<InputDragger
 						onValueChangeCancel={null}
 						min={minStartFrame}
-						max={endFrame - 1}
+						max={endFrame}
 						name="Start frame"
 						value={startFrame}
 						step={1}
@@ -80,7 +80,7 @@ export const FrameRangeSetting: React.FC<{
 				<div style={{width: INPUT_WIDTH}}>
 					<InputDragger
 						onValueChangeCancel={null}
-						min={startFrame + 1}
+						min={startFrame}
 						max={maxEndFrame}
 						name="End frame"
 						value={endFrame}

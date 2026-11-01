@@ -1073,6 +1073,11 @@ export type SplitSequencesResponse =
 	| {
 			success: true;
 			nodePathMutation: SequenceNodePathMutation;
+			splitNodes: {absolutePath: string; nodePath: SequenceNodePath}[];
+			sourceVersions: {
+				absolutePath: string;
+				sourceVersion: SourceFileVersion | null;
+			}[];
 	  }
 	| {
 			success: false;

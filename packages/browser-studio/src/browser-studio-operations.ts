@@ -1070,6 +1070,8 @@ export const createBrowserStudioOperations = ({
 						fileName: request.fileName,
 						line: request.line,
 						column: request.column,
+						sourceVersion:
+							sourceVersions.get(result.nodePath.absolutePath) ?? null,
 					});
 				}
 			}
@@ -1775,18 +1777,38 @@ export const createBrowserStudioOperations = ({
 					videoConfig: sequence.videoConfigValues ?? undefined,
 				})),
 			});
+			let sourceVersions: {
+				absolutePath: string;
+				sourceVersion: SourceFileVersion | null;
+			}[] = [];
 			const nodePathMutation = controller.applyMutation({
 				undoRedoNavigation: null,
 				timelineSelection: null,
 				fileName: result.changes.map(({filePath}) => filePath).join(', '),
-				mutate: (current) => applyCodemodChanges(current, result.changes),
+				mutate: (current) => {
+					const updated = applyCodemodChanges(current, result.changes);
+					const versions = captureSourceVersions(updated);
+					sourceVersions = result.changes.map(({filePath}) => ({
+						absolutePath: filePath,
+						sourceVersion: versions.get(filePath) ?? null,
+					}));
+					return updated;
+				},
 				nodePathMutationFiles: getNodePathMutationFiles(result),
 			});
 			if (nodePathMutation === null) {
 				throw new Error('Could not split JSX sequence');
 			}
 
-			return {success: true, nodePathMutation};
+			return {
+				success: true,
+				nodePathMutation,
+				splitNodes: result.insertedNodes.map(({filePath, nodePath}) => ({
+					absolutePath: filePath,
+					nodePath,
+				})),
+				sourceVersions,
+			};
 		} catch (error) {
 			return {
 				success: false,

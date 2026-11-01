@@ -794,6 +794,10 @@ export const Root = () => <Composition id="MyComp" component={Component} duratio
 		fileName: 'src/Composition.tsx',
 		line: 2,
 		column: 31,
+		sourceVersion: {
+			sessionId: expect.any(String),
+			revision: expect.any(Number),
+		},
 	});
 
 	await operations.unsubscribeFromSequenceProps({
@@ -894,6 +898,31 @@ registerRoot(Root);`,
 	if (!splitResult.success) {
 		throw new Error(splitResult.reason);
 	}
+
+	expect(splitResult.splitNodes).toEqual([
+		{
+			absolutePath: fileName,
+			nodePath: getNodes({project: currentProject, filePath: fileName}).filter(
+				(node) => node.tagName === 'Sequence',
+			)[1].nodePath,
+		},
+	]);
+	const sourceVersionSessionId = events.find(
+		(event) => event.type === 'init',
+	)?.sourceVersionSessionId;
+	if (sourceVersionSessionId === null || sourceVersionSessionId === undefined) {
+		throw new Error('Expected a source version session');
+	}
+
+	expect(splitResult.sourceVersions).toEqual([
+		{
+			absolutePath: fileName,
+			sourceVersion: {
+				sessionId: sourceVersionSessionId,
+				revision: expect.any(Number),
+			},
+		},
+	]);
 
 	expect(currentProject.files[fileName]).toContain('<Track name="Sequence">');
 	expect(currentProject.files[fileName]).toContain(

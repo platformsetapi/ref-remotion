@@ -1,6 +1,6 @@
 ---
 name: studio-dev
-description: Develop or review Remotion Studio features and UI. Apply Studio principles for optimistic updates, agent and code editing parity, WebMCP coverage, iframe-safe hover behavior, design consistency, mode availability, and performance verification.
+description: Develop or review Remotion Studio features and UI. Apply Studio principles for optimistic updates, agent access through code or WebMCP, iframe-safe hover behavior, design consistency, mode availability, and performance verification.
 ---
 
 # Studio development
@@ -24,20 +24,22 @@ and [optimistic composition metadata](../../../packages/studio/src/components/In
 
 ## Agent, interactive, and code parity
 
-- Every state must be inspectable and reachable by an agent through code or
-  WebMCP. Expose transient UI state through WebMCP when source edits cannot
-  represent it.
-- Every action must be exposed through WebMCP. Adding a button or shortcut is
-  incomplete until an agent can invoke the same action. Follow the existing
+- Every state and action must be available to an agent through project code or
+  WebMCP. Anything already editable in project source satisfies this requirement.
+  Moving or trimming a sequence, for example, does not need a WebMCP tool.
+  Do not add redundant tools solely to mirror source-backed editing actions.
+- Expose transient Studio state and actions through WebMCP when project source
+  cannot represent them, such as playback, selection, pending render jobs, and
+  render cancellation. Follow the existing
   registrations in [WebMcp.tsx](../../../packages/studio/src/components/WebMcp.tsx)
   and the relevant feature's tools.
 - Document every new WebMCP tool and changes to its inputs or outputs in the
   [WebMCP documentation](../../../packages/docs/docs/ai/webmcp.mdx), including
   pending state, results, and mode availability.
-- Every edit must work interactively, agentically, and by editing code. UI and
-  WebMCP edits must persist through the same source mutation/history path, and
-  direct code changes must appear correctly after hot reload. Avoid separate
-  sources of truth for these three ways of editing.
+- Every source-backed edit must work interactively and by editing project code,
+  which also provides agentic access. Direct code changes must appear correctly
+  after hot reload. Where a WebMCP editing tool exists, it must use the same
+  source mutation/history path as the UI. Avoid separate sources of truth.
 - Keep validation, optimistic behavior, undo/redo, errors, and mode restrictions
   consistent across interactive and WebMCP entry points. Read current state when
   a tool executes instead of capturing a stale snapshot at registration time.
@@ -136,10 +138,11 @@ Report the measured result and any verification limits.
 
 ## Verify the feature
 
-Exercise the edit through UI, WebMCP, and direct code changes. Check immediate
-feedback, persistence after HMR, failure recovery, and undo/redo for edits that
-participate in history. Check availability in each mode and the relevant hover,
-focus, cursor, and CSS-reset behavior above.
+Exercise source-backed edits through the UI and direct code changes. Exercise
+WebMCP where a tool is provided or needed for transient Studio state and actions.
+Check immediate feedback, persistence after HMR, failure recovery, and undo/redo
+for edits that participate in history. Check availability in each mode and the
+relevant hover, focus, cursor, and CSS-reset behavior above.
 
 For Studio code changes, run the package build and relevant existing checks:
 
