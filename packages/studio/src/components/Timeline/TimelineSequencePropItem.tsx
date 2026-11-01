@@ -23,15 +23,16 @@ import {openOriginalPositionInEditorAtProperty} from '../../helpers/open-in-edit
 import type {
 	SchemaFieldInfo,
 	TimelineFieldOnDragValueChange,
+	TimelineFieldOnDragEnd,
 	TimelineFieldOnSave,
 } from '../../helpers/timeline-layout';
 import {useRuntimeStoreValue} from '../../helpers/use-runtime-values';
 import {ContextMenu} from '../ContextMenu';
 import {INSPECTOR_PANEL_HORIZONTAL_PADDING} from '../InspectorPanelLayout';
 import type {ComboboxValue} from '../NewComposition/ComboBox';
+import {showNotification} from '../Notifications/NotificationCenter';
 import {OverrideIdToNodePathMappingsRefContext} from '../SequencePropsSubscriptionProvider';
 import {useEditorOpening} from '../use-default-editor-info';
-import {callAddSequenceKeyframe} from './call-add-keyframe';
 import {getCopyContextForAgentsMenuItem} from './get-copy-context-for-agents-menu-item';
 import {getPlaybackRateKeyframeChanges} from './get-playback-rate-keyframe-changes';
 import {getSequencePropResetChanges} from './get-sequence-prop-reset-changes';
@@ -39,7 +40,7 @@ import {
 	getKeyframeDisplayOffset,
 	getKeyframeSourceFrame,
 } from './get-timeline-keyframes';
-import {saveSequenceProps} from './save-sequence-prop';
+import {saveSequencePropsWithResult} from './save-sequence-prop';
 import {isTimelineFieldStacked} from './timeline-field-row-layout';
 import {TimelineExpandArrowSpacer} from './TimelineExpandArrowButton';
 import {TimelineFieldLabel} from './TimelineFieldLabel';
@@ -62,6 +63,7 @@ import {
 } from './TimelineSelection';
 import {Transform3DModeContext} from './Transform3DModeContext';
 import {useClampSequenceTimingValue} from './use-clamp-sequence-timing-value';
+import {useSequencePropPreview} from './use-sequence-prop-preview';
 
 const fieldRowBase: React.CSSProperties = {};
 
@@ -123,6 +125,15 @@ const Value: React.FC<{
 	const video = Internals.useVideo();
 	const fps = nodePath.videoConfigValues?.fps ?? video?.fps;
 	const {clampTimingValue, clearTimingLimits} = useClampSequenceTimingValue();
+	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
+	const {
+		getPreview: getRetimingPreview,
+		takePreview: takeRetimingPreview,
+		cancelPreview: cancelRetimingPreview,
+	} = useSequencePropPreview();
+	const dragOverridesRef = useContext(
+		Internals.VisualModeDragOverridesRefContext,
+	);
 	const previewedKeyframes = useRef<
 		ReturnType<typeof getPlaybackRateKeyframeChanges>['previews']
 	>([]);
@@ -227,12 +238,9 @@ const Value: React.FC<{
 	const {getDragOverrides} = useContext(
 		Internals.VisualModeDragOverridesContext,
 	);
-	const {
-		setDragOverrides,
-		clearDragOverrides,
-		setEffectDragOverrides,
-		clearEffectDragOverrides,
-	} = useContext(Internals.VisualModeSettersContext);
+	const {setEffectDragOverrides, clearEffectDragOverrides} = useContext(
+		Internals.VisualModeSettersContext,
+	);
 	const dragOverrideValue = useMemo(() => {
 		return nodePath === null
 			? undefined
@@ -258,10 +266,35 @@ const Value: React.FC<{
 			? previewServerState.clientId
 			: null;
 
+	const cancelActivePreview = useCallback(() => {
+		clearTimingLimits();
+		if (nodePath === null) {
+			throw new Error('Cannot clear drag value');
+		}
+
+		cancelPreview();
+		cancelRetimingPreview();
+		for (const preview of previewedKeyframes.current) {
+			if (preview.effectIndex !== null) {
+				clearEffectDragOverrides(preview.nodePath, preview.effectIndex);
+			}
+		}
+
+		previewedKeyframes.current = [];
+	}, [
+		cancelPreview,
+		cancelRetimingPreview,
+		clearEffectDragOverrides,
+		nodePath,
+		clearTimingLimits,
+	]);
+
 	const onSave = useCallback<TimelineFieldOnSave>(
 		(value, options) => {
 			value = clampTimingValue(nodePath, field.key, value);
+			clearTimingLimits();
 			if (!clientId) {
+				cancelActivePreview();
 				return Promise.reject(new Error('Not connected to studio server'));
 			}
 
@@ -278,6 +311,7 @@ const Value: React.FC<{
 			const loopDurationChange = getLoopDurationChange(value);
 
 			if (value === propStatus.codeValue) {
+				cancelActivePreview();
 				return Promise.resolve();
 			}
 
@@ -285,17 +319,59 @@ const Value: React.FC<{
 				defaultValue === stringifiedValue &&
 				propStatus.codeValue === undefined
 			) {
+				cancelActivePreview();
 				return Promise.resolve();
 			}
 
+			const preview = takePreview();
+			const retimingPreview = takeRetimingPreview();
+			const effectPreviews = previewedKeyframes.current;
+			previewedKeyframes.current = [];
+			const finishRetimingPreview = () => {
+				retimingPreview.cancel();
+				for (const effect of effectPreviews) {
+					if (effect.effectIndex === null) continue;
+					const current = dragOverridesRef.current.getEffectDragOverrides(
+						effect.nodePath,
+						effect.effectIndex,
+					)[effect.fieldKey];
+					if (current?.type === 'keyframed' && current.status === effect.status)
+						clearEffectDragOverrides(effect.nodePath, effect.effectIndex);
+				}
+			};
+
+			const currentNodePath = preview.getNodePath(nodePath);
+			if (currentNodePath === null) {
+				preview.cancel();
+				finishRetimingPreview();
+				return Promise.resolve();
+			}
+
+			const preparesSource =
+				options?.sourceEdit?.type === 'google-font' ||
+				options?.sourceEdit?.type === 'clipboard-param';
+			if (!preparesSource) {
+				preview.setDragOverrides(
+					nodePath,
+					field.key,
+					Internals.makeStaticDragOverride(value),
+				);
+				if (loopDurationChange !== null)
+					preview.setDragOverrides(
+						nodePath,
+						'durationInFrames',
+						Internals.makeStaticDragOverride(loopDurationChange),
+					);
+			}
+
 			return unstable_batchedUpdates(() =>
-				saveSequenceProps({
+				saveSequencePropsWithResult({
 					addedKeyframes: null,
 					movedKeyframes: null,
 					changes: [
 						{
 							fileName: validatedLocation.source,
-							nodePath,
+							nodePath: currentNodePath,
 							fieldKey: field.key,
 							value,
 							defaultValue,
@@ -310,7 +386,7 @@ const Value: React.FC<{
 							: [
 									{
 										fileName: validatedLocation.source,
-										nodePath,
+										nodePath: currentNodePath,
 										fieldKey: 'durationInFrames',
 										value: loopDurationChange,
 										defaultValue: null,
@@ -318,15 +394,38 @@ const Value: React.FC<{
 									},
 								]),
 					],
-					setPropStatuses,
+					setPropStatuses: preparesSource
+						? setPropStatuses
+						: preview.setPropStatuses,
 					clientId,
 					undoLabel: `Update ${fieldLabel}`,
 					redoLabel: `Update ${fieldLabel} again`,
 				}),
-			);
+			)
+				.then((response) => {
+					if (response && !response.canUpdate)
+						throw new Error(
+							'The layer could not be updated. Try the edit again.',
+						);
+					preview.acknowledge(response);
+				})
+				.catch((error) => {
+					preview.fail();
+					showNotification(
+						`Could not update ${fieldLabel}: ${error instanceof Error ? error.message : String(error)}`,
+						4000,
+					);
+				})
+				.finally(finishRetimingPreview);
 		},
 		[
 			clampTimingValue,
+			clearTimingLimits,
+			cancelActivePreview,
+			takePreview,
+			takeRetimingPreview,
+			dragOverridesRef,
+			clearEffectDragOverrides,
 			propStatus,
 			clientId,
 			field.description,
@@ -350,26 +449,29 @@ const Value: React.FC<{
 			value = clampTimingValue(nodePath, field.key, value);
 			const keyframeChanges = getPlaybackRateChanges(value);
 			unstable_batchedUpdates(() => {
+				cancelRetimingPreview();
 				for (const preview of previewedKeyframes.current) {
-					if (preview.effectIndex === null) {
-						clearDragOverrides(preview.nodePath);
-					} else {
+					if (preview.effectIndex !== null) {
 						clearEffectDragOverrides(preview.nodePath, preview.effectIndex);
 					}
 				}
 
 				previewedKeyframes.current = keyframeChanges?.previews ?? [];
-				setDragOverrides(
+				getPreview().setDragOverrides(
 					nodePath,
 					field.key,
 					Internals.makeStaticDragOverride(value),
 				);
 				for (const preview of previewedKeyframes.current) {
 					if (preview.effectIndex === null) {
-						setDragOverrides(preview.nodePath, preview.fieldKey, {
-							type: 'keyframed',
-							status: preview.status,
-						});
+						getRetimingPreview().setDragOverrides(
+							preview.nodePath,
+							preview.fieldKey,
+							{
+								type: 'keyframed',
+								status: preview.status,
+							},
+						);
 					} else {
 						setEffectDragOverrides(
 							preview.nodePath,
@@ -382,9 +484,10 @@ const Value: React.FC<{
 			});
 		},
 		[
-			clearDragOverrides,
+			cancelRetimingPreview,
+			getRetimingPreview,
+			getPreview,
 			clearEffectDragOverrides,
-			setDragOverrides,
 			setEffectDragOverrides,
 			nodePath,
 			field.key,
@@ -393,36 +496,18 @@ const Value: React.FC<{
 		],
 	);
 
-	const onDragEnd = useCallback(() => {
-		clearTimingLimits();
-		if (nodePath === null) {
-			throw new Error('Cannot clear drag value');
-		}
-
-		clearDragOverrides(nodePath);
-		for (const preview of previewedKeyframes.current) {
-			if (preview.effectIndex === null) {
-				clearDragOverrides(preview.nodePath);
-			} else {
-				clearEffectDragOverrides(preview.nodePath, preview.effectIndex);
-			}
-		}
-
-		previewedKeyframes.current = [];
-	}, [
-		clearDragOverrides,
-		clearEffectDragOverrides,
-		nodePath,
-		clearTimingLimits,
-	]);
+	const onDragEnd = useCallback<TimelineFieldOnDragEnd>(
+		(reason) => {
+			if (reason === 'cancel') cancelActivePreview();
+		},
+		[cancelActivePreview],
+	);
 
 	return (
 		<TimelineFieldValue
 			field={field}
 			propStatus={propStatus}
-			onSave={(value, options) =>
-				onSave(value, options).finally(clearTimingLimits)
-			}
+			onSave={onSave}
 			onDragValueChange={onDragValueChange}
 			onDragEnd={onDragEnd}
 			effectiveValue={effectiveValue}
@@ -467,7 +552,7 @@ type TimelineSequenceKeyframedValueAtSourceFrameProps = Pick<
 		value: unknown,
 		sourceFrame: number,
 	) => void;
-	readonly onDragEnd: () => void;
+	readonly onDragEnd: TimelineFieldOnDragEnd;
 };
 
 const TimelineSequenceKeyframedValueAtSourceFrame: React.FC<
@@ -534,9 +619,7 @@ const TimelineSequenceKeyframedValueUnmemoized: React.FC<
 	const {getDragOverrides} = useContext(
 		Internals.VisualModeDragOverridesContext,
 	);
-	const {setPropStatuses, setDragOverrides, clearDragOverrides} = useContext(
-		Internals.VisualModeSettersContext,
-	);
+	const {getPreview, takePreview, cancelPreview} = useSequencePropPreview();
 	const {previewServerState} = useContext(StudioServerConnectionCtx);
 	const clientId =
 		previewServerState.type === 'connected'
@@ -550,26 +633,78 @@ const TimelineSequenceKeyframedValueUnmemoized: React.FC<
 	const onSaveKeyframed = useCallback(
 		(value: unknown, frame: number) => {
 			if (!clientId) {
+				cancelPreview();
 				return Promise.reject(new Error('Not connected to studio server'));
 			}
 
-			return callAddSequenceKeyframe({
-				fileName,
+			const preview = takePreview();
+			const currentNodePath = preview.getNodePath(nodePath);
+			if (currentNodePath === null) {
+				preview.cancel();
+				return Promise.resolve();
+			}
+
+			preview.setDragOverrides(
 				nodePath,
-				fieldKey: field.key,
-				sourceFrame: frame,
-				value,
-				schema,
-				setPropStatuses,
+				field.key,
+				Internals.makeKeyframedDragOverride({
+					status: propStatus,
+					frame,
+					value,
+					defaultEasing: isSchemaFieldHoldOnly({schema, key: field.key})
+						? {type: 'step1'}
+						: undefined,
+				}),
+			);
+			return saveSequencePropsWithResult({
+				changes: [],
+				addedKeyframes: [
+					{
+						fileName,
+						nodePath: currentNodePath,
+						fieldKey: field.key,
+						sourceFrame: frame,
+						value,
+						schema,
+					},
+				],
+				movedKeyframes: null,
+				setPropStatuses: preview.setPropStatuses,
 				clientId,
-			});
+				undoLabel: `Update ${field.description ?? field.key}`,
+				redoLabel: `Update ${field.description ?? field.key} again`,
+			})
+				.then((response) => {
+					if (response && !response.canUpdate)
+						throw new Error(
+							'The layer could not be updated. Try the edit again.',
+						);
+					preview.acknowledge(response);
+				})
+				.catch((error) => {
+					preview.fail();
+					showNotification(
+						`Could not update ${field.description ?? field.key}: ${error instanceof Error ? error.message : String(error)}`,
+						4000,
+					);
+				});
 		},
-		[clientId, field.key, fileName, nodePath, schema, setPropStatuses],
+		[
+			clientId,
+			field.description,
+			field.key,
+			fileName,
+			nodePath,
+			schema,
+			propStatus,
+			takePreview,
+			cancelPreview,
+		],
 	);
 
 	const onKeyframedDragValueChangeAtFrame = useCallback(
 		(value: unknown, sourceFrame: number) => {
-			setDragOverrides(
+			getPreview().setDragOverrides(
 				nodePath,
 				field.key,
 				Internals.makeKeyframedDragOverride({
@@ -585,12 +720,15 @@ const TimelineSequenceKeyframedValueUnmemoized: React.FC<
 				}),
 			);
 		},
-		[propStatus, field.key, nodePath, schema, setDragOverrides],
+		[propStatus, field.key, nodePath, schema, getPreview],
 	);
 
-	const onKeyframedDragEnd = useCallback(() => {
-		clearDragOverrides(nodePath);
-	}, [clearDragOverrides, nodePath]);
+	const onKeyframedDragEnd = useCallback<TimelineFieldOnDragEnd>(
+		(reason) => {
+			if (reason === 'cancel') cancelPreview();
+		},
+		[cancelPreview],
+	);
 
 	const valueProps = {
 		field,
@@ -668,7 +806,7 @@ export const TimelineSequencePropItem: React.FC<{
 	const {getDragOverrides} = useContext(
 		Internals.VisualModeDragOverridesContext,
 	);
-	const {setPropStatuses} = useContext(Internals.VisualModeSettersContext);
+	const {takePreview: takeResetPreview} = useSequencePropPreview();
 	const {previewServerState} = useContext(StudioServerConnectionCtx);
 	const {canOpenInEditor, defaultEditorId} = useEditorOpening(
 		previewServerState.type === 'connected',
@@ -762,28 +900,50 @@ export const TimelineSequencePropItem: React.FC<{
 				: null;
 		const fieldLabel = field.description ?? field.key;
 
-		saveSequenceProps({
+		const changes = [
+			...getSequencePropResetChanges({
+				fileName: validatedLocation.source,
+				nodePath,
+				fieldKey: field.key,
+				value: field.fieldSchema.default,
+				defaultValue,
+				schema,
+			}).map((change) =>
+				change.fieldKey === 'playbackRate'
+					? {...change, sourceEdit: {type: 'playback-rate' as const}}
+					: change,
+			),
+		];
+		const preview = takeResetPreview();
+		for (const change of changes)
+			preview.setDragOverrides(
+				change.nodePath,
+				change.fieldKey,
+				Internals.makeStaticDragOverride(change.value),
+			);
+		saveSequencePropsWithResult({
 			addedKeyframes: null,
 			movedKeyframes: null,
-			changes: [
-				...getSequencePropResetChanges({
-					fileName: validatedLocation.source,
-					nodePath,
-					fieldKey: field.key,
-					value: field.fieldSchema.default,
-					defaultValue,
-					schema,
-				}).map((change) =>
-					change.fieldKey === 'playbackRate'
-						? {...change, sourceEdit: {type: 'playback-rate' as const}}
-						: change,
-				),
-			],
-			setPropStatuses,
+			changes,
+			setPropStatuses: preview.setPropStatuses,
 			clientId: previewServerState.clientId,
 			undoLabel: `Reset ${fieldLabel}`,
 			redoLabel: `Reapply ${fieldLabel}`,
-		});
+		})
+			.then((response) => {
+				if (response && !response.canUpdate)
+					throw new Error(
+						'The layer could not be updated. Try the edit again.',
+					);
+				preview.acknowledge(response);
+			})
+			.catch((error) => {
+				preview.fail();
+				showNotification(
+					`Could not reset ${fieldLabel}: ${error instanceof Error ? error.message : String(error)}`,
+					4000,
+				);
+			});
 	}, [
 		canResetToDefault,
 		canShowReset,
@@ -793,7 +953,7 @@ export const TimelineSequencePropItem: React.FC<{
 		nodePath,
 		previewServerState,
 		schema,
-		setPropStatuses,
+		takeResetPreview,
 		validatedLocation.source,
 		propStatus,
 	]);

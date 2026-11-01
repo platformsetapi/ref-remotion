@@ -112,6 +112,7 @@ const NumericAxis: React.FC<{
 			}}
 		>
 			<InputDragger
+				onValueChangeCancel={clear}
 				type="number"
 				aria-description="Type to set all values; drag to adjust each value"
 				value={dragValue ?? coordinates[0]}

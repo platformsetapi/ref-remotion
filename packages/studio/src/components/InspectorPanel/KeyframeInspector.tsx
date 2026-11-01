@@ -563,6 +563,10 @@ export const KeyframeInspector: React.FC<{
 				<div style={detailsBeforeInlineAction}>
 					<InspectorDetailRow label="Frame">
 						<InputDragger
+							onValueChangeCancel={() => {
+								clearFrameDragOverride(details);
+								setDraftFrame(selection.frame);
+							}}
 							type="number"
 							value={draftFrame}
 							status="ok"

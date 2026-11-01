@@ -58,6 +58,7 @@ export type TimelineFieldOnSave = (
 		sourceEdit?: SaveSequencePropSourceEdit;
 	},
 ) => Promise<void>;
+export type TimelineFieldOnDragEnd = (reason: 'commit' | 'cancel') => void;
 export type TimelineFieldOnDragValueChange = (value: unknown) => void;
 
 export type TimelineEffectGroupInfo = {
