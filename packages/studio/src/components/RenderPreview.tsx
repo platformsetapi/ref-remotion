@@ -2,7 +2,7 @@ import React, {useContext, useEffect, useMemo, useState} from 'react';
 import {StudioServerConnectionCtx} from '../helpers/client-id';
 import {LIGHT_TEXT, WHITE} from '../helpers/colors';
 import type {AssetMetadata} from '../helpers/get-asset-metadata';
-import {remotion_outputsBase} from '../helpers/get-asset-metadata';
+import {getRenderOutputSrc} from '../helpers/get-asset-metadata';
 import {getPreviewFileType} from '../helpers/get-preview-file-type';
 import type {RenderOutputPlaybackContent} from '../helpers/render-output-playback';
 import {getMediaMetadata} from '../helpers/use-media-metadata';
@@ -88,7 +88,7 @@ export const RenderPreview: React.FC<{
 		blobFailure?.identity === blobIdentity
 			? (blobFailure?.error ?? null)
 			: null;
-	const src = getBlob ? blobUrl : remotion_outputsBase + path;
+	const src = getBlob ? blobUrl : getRenderOutputSrc(path);
 	useEffect(() => {
 		if (!getBlob || src === null || fileType !== 'video') return;
 		let cancelled = false;

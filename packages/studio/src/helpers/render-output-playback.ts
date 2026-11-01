@@ -1,4 +1,5 @@
 import type {CanvasContent} from 'remotion';
+import {normalizeOutputPath} from './output-path';
 
 export type RenderOutputPlaybackContent = Extract<
 	CanvasContent,
@@ -55,7 +56,8 @@ export const getRenderOutputPlaybackTarget = (
 	if (
 		content.type === 'output' &&
 		current.content.type === 'output' &&
-		content.path === current.content.path
+		normalizeOutputPath(content.path) ===
+			normalizeOutputPath(current.content.path)
 	)
 		return current.target;
 	if (
@@ -87,7 +89,7 @@ export const registerRenderOutputPlayback = ({
 	const target: RenderOutputPlaybackTarget = {
 		id:
 			content.type === 'output'
-				? `output:${content.path}`
+				? `output:${normalizeOutputPath(content.path)}`
 				: `output-blob:${content.displayName}`,
 		getState: () => {
 			requireCurrent();
